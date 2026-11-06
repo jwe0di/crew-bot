@@ -47,14 +47,20 @@ class CrewBot(discord.Client):
     async def setup_hook(self):
         await init_db()
         self.add_view(ReviewView())
-        if config.GUILD_ID:
-            guild = discord.Object(config.GUILD_ID)
-            self.tree.clear_commands(guild=guild) # مسح الأوامر القديمة المعلقة لضمان ظهور الجديدة فوراً
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
-        print("✅ Commands synced successfully!")
+        
+        try:
+            if hasattr(config, "GUILD_ID") and config.GUILD_ID:
+                guild_id = int(config.GUILD_ID)
+                guild = discord.Object(id=guild_id)
+                self.tree.clear_commands(guild=guild)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                print(f"🚀 SUCCESS: Commands synced INSTANTLY to Guild ID: {guild_id}")
+            else:
+                await self.tree.sync()
+                print("⚠️ WARNING: GUILD_ID is missing in config.py! Performed GLOBAL sync (takes up to 1 hour to appear in Discord).")
+        except Exception as e:
+            print(f"❌ ERROR in setup_hook sync: {e}")
 
     async def on_ready(self):
         print(f"Bot logged in as {self.user}")
