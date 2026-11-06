@@ -58,7 +58,7 @@ class CrewBot(discord.Client):
                 print(f"🚀 SUCCESS: Commands synced INSTANTLY to Guild ID: {guild_id}")
             else:
                 await self.tree.sync()
-                print("⚠️ WARNING: GUILD_ID is missing in config.py! Performed GLOBAL sync (takes up to 1 hour to appear in Discord).")
+                print("⚠️ WARNING: GUILD_ID is missing in config.py! Performed GLOBAL sync.")
         except Exception as e:
             print(f"❌ ERROR in setup_hook sync: {e}")
 
@@ -120,7 +120,6 @@ async def set_setting(key, value):
         )
         await db.commit()
 
-# دوال جلب وحفظ الرومات المخصصة لكل سيرفر من قاعدة البيانات
 async def get_guild_channel(guild_id, channel_type):
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute(f"SELECT {channel_type} FROM guild_channels WHERE guild_id=?", (guild_id,))
@@ -455,18 +454,21 @@ NO_PERM = "You don't have permission to modify points."
 POINT_CHOICES = [app_commands.Choice(name=l, value=k) for k, l in config.POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in config.LADDER]
 
-@bot.tree.command(name="setchannel", description="تغيير وتخصيص رومات البوت (Review, Logs, Audit)")
+# --- أمر /setchannel المطور (تختار نوع اللوج ويظهر لك الروم بعده مباشرة) ---
+@bot.tree.command(name="setchannel", description="تخصيص رومات البوت لأنواع اللوجات المختلفة (Review, Logs, Audit)")
 @app_commands.choices(channel_type=[
-    app_commands.Choice(name="Review Channel (روم الريفيوهات)", value="review_channel"),
-    app_commands.Choice(name="Log Channel (روم السجلات العامة)", value="log_channel"),
-    app_commands.Choice(name="Audit Channel (روم الأوديت)", value="audit_channel")
+    app_commands.Choice(name="⚔️ Review Channel (روم الريفيوهات والتقييم)", value="review_channel"),
+    app_commands.Choice(name="📜 Log Channel (روم السجلات العامة المقبولة)", value="log_channel"),
+    app_commands.Choice(name="🛡️ Audit Channel (روم أوديت التعديلات والأخطاء)", value="audit_channel")
 ])
 async def setchannel(i: discord.Interaction, channel_type: app_commands.Choice[str], channel: discord.TextChannel):
     if not isinstance(i.user, discord.Member) or not is_higher_than_bot(i.user, i.guild):
-        return await i.response.send_message("You don't have permission to change channels.", ephemeral=True)
+        return await i.response.send_message("❌ ليس لديك صلاحية لتغيير الرومات (يجب أن يكون رتبتك أعلى من البوت).", ephemeral=True)
     
+    # حفظ الروم في قاعدة البيانات المخصصة للسيرفر
     await set_guild_channel(i.guild.id, channel_type.value, channel.id)
-    await i.response.send_message(f"✅ تم بنجاح تعيين **{channel_type.name}** إلى: {channel.mention}", ephemeral=True)
+    
+    await i.response.send_message(f"✅ تم بنجاح تعيين **{channel_type.name}** إلى الروم: {channel.mention} في قاعدة البيانات!", ephemeral=True)
 
 @bot.tree.command(name="set-log-points", description="Set points for a specific log type")
 @app_commands.choices(log=POINT_CHOICES)
