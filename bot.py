@@ -49,10 +49,12 @@ class CrewBot(discord.Client):
         self.add_view(ReviewView())
         if config.GUILD_ID:
             guild = discord.Object(config.GUILD_ID)
+            self.tree.clear_commands(guild=guild) # مسح الأوامر القديمة المعلقة لضمان ظهور الجديدة فوراً
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
         else:
             await self.tree.sync()
+        print("✅ Commands synced successfully!")
 
     async def on_ready(self):
         print(f"Bot logged in as {self.user}")
@@ -61,12 +63,11 @@ class CrewBot(discord.Client):
 
 bot = CrewBot()
 
-# --- مهمة خلفية لعمل ريفرش ونشاط للبوت كل ساعة بدون ضياع أي بيانات للوحات ---
+# --- مهمة خلفية لعمل ريفرش ونشاط للبوت كل ساعة بدون ضياع أي بيانات ---
 @tasks.loop(hours=1.0)
 async def hourly_refresh_task():
     try:
         print("🔄 Running scheduled hourly background refresh (Data & Database are safe)...")
-        # البوت هنا بيعمل تحديث لنشاطه وتفريغ للذاكرة المؤقتة بدون مسح الداتا بيز نهائياً
     except Exception as e:
         print(f"Error in hourly refresh: {e}")
 
@@ -326,7 +327,7 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason"):
 
         data = json.loads(row["data"])
         flags = json.loads(row["flags"] or "[]")
-        rejected_msg = build_stylized_log(self.log_id, self.log_type if hasattr(self, 'log_type') else row["type"], "<@" + str(row['author_id']) + ">", data, row["result"],
+        rejected_msg = build_stylized_log(self.log_id, row["type"], "<@" + str(row['author_id']) + ">", data, row["result"],
                                           flags, status="❌ Rejected", reviewer_mention=i.user.mention,
                                           reason=self.reason.value)
         await self.message.edit(content=rejected_msg, view=None)
