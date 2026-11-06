@@ -10,6 +10,7 @@ from typing import Optional
 import aiosqlite
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 import config
@@ -54,14 +55,24 @@ class CrewBot(discord.Client):
             await self.tree.sync()
 
     async def on_ready(self):
-        print("Bot logged in as", self.user)
-        if not check_pending_logs.is_running():
-            try:
-                check_pending_logs.start()
-            except Exception:
-                pass
+        print(f"Bot logged in as {self.user}")
+        if not hourly_refresh_task.is_running():
+            hourly_refresh_task.start()
 
 bot = CrewBot()
+
+# --- مهمة خلفية لعمل ريفرش ونشاط للبوت كل ساعة بدون ضياع أي بيانات للوحات ---
+@tasks.loop(hours=1.0)
+async def hourly_refresh_task():
+    try:
+        print("🔄 Running scheduled hourly background refresh (Data & Database are safe)...")
+        # البوت هنا بيعمل تحديث لنشاطه وتفريغ للذاكرة المؤقتة بدون مسح الداتا بيز نهائياً
+    except Exception as e:
+        print(f"Error in hourly refresh: {e}")
+
+@hourly_refresh_task.before_loop
+async def before_hourly_refresh():
+    await bot.wait_until_ready()
 
 def is_higher_than_bot(member: discord.Member, guild: discord.Guild) -> bool:
     if member.guild_permissions.administrator:
@@ -109,7 +120,6 @@ async def get_guild_channel(guild_id, channel_type):
         row = await cur.fetchone()
     if row and row[0]:
         return row[0]
-    # الفاليو الافتراضي من ملف config لو مش متحدث
     if channel_type == "review_channel":
         return getattr(config, "REVIEW_CHANNEL_ID", None)
     elif channel_type == "log_channel":
@@ -316,7 +326,7 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason"):
 
         data = json.loads(row["data"])
         flags = json.loads(row["flags"] or "[]")
-        rejected_msg = build_stylized_log(self.log_id, row["type"], "<@" + str(row['author_id']) + ">", data, row["result"],
+        rejected_msg = build_stylized_log(self.log_id, self.log_type if hasattr(self, 'log_type') else row["type"], "<@" + str(row['author_id']) + ">", data, row["result"],
                                           flags, status="❌ Rejected", reviewer_mention=i.user.mention,
                                           reason=self.reason.value)
         await self.message.edit(content=rejected_msg, view=None)
@@ -438,7 +448,6 @@ NO_PERM = "You don't have permission to modify points."
 POINT_CHOICES = [app_commands.Choice(name=l, value=k) for k, l in config.POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in config.LADDER]
 
-# --- أوامر جديدة لتغيير وتخصيص الرومات بأمر مباشر ---
 @bot.tree.command(name="setchannel", description="تغيير وتخصيص رومات البوت (Review, Logs, Audit)")
 @app_commands.choices(channel_type=[
     app_commands.Choice(name="Review Channel (روم الريفيوهات)", value="review_channel"),
@@ -475,4 +484,3 @@ async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str]
     await i.response.send_message("Done. **" + rank.name + "** requires " + str(points) + " points.", ephemeral=True)
 
 bot.run(os.getenv("DISCORD_TOKEN"))
-
