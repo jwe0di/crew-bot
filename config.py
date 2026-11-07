@@ -35,18 +35,22 @@ LADDER = [
 DEFAULT_POINTS = {
     "war_win": 10,
     "war_loss": 5,
-    "outside_win": 8,
-    "outside_loss": 4,
-    "internal": 3,
+    "1v1_win": 8,
+    "1v1_loss": 4,
+    "2v2_win": 9,
+    "2v2_loss": 4,
+    "training": 3,
     "tryout": 5,
 }
 
 POINT_LABELS = {
     "war_win": "War - Win",
     "war_loss": "War - Loss",
-    "outside_win": "Outside 1v1 - Win",
-    "outside_loss": "Outside 1v1 - Loss",
-    "internal": "Internal fight",
+    "1v1_win": "1v1 - Win",
+    "1v1_loss": "1v1 - Loss",
+    "2v2_win": "2v2 - Win",
+    "2v2_loss": "2v2 - Loss",
+    "training": "Training session",
     "tryout": "Tryout",
 }
 
@@ -68,8 +72,8 @@ LOG_TYPES = {
             ("notes", "Notes (optional)", True, False),
         ],
     },
-    "outside": {
-        "label": "Outside 1v1 Log",
+    "1v1": {
+        "label": "1v1 Fight Log",
         "fields": [
             ("my_fighter", "Who fought for us", False, True),
             ("opponent", "Who we fought against", False, True),
@@ -77,12 +81,20 @@ LOG_TYPES = {
             ("notes", "Notes (optional)", True, False),
         ],
     },
-    "internal": {
-        "label": "Internal Fight Log",
+    "2v2": {
+        "label": "2v2 Fight Log",
         "fields": [
-            ("p1", "Fighter 1", False, True),
-            ("p2", "Fighter 2", False, True),
+            ("my_team", "Our team players", True, True),
+            ("their_team", "Enemy team players", True, True),
             ("score", "Score (e.g. 5-3)", False, True),
+            ("notes", "Notes (optional)", True, False),
+        ],
+    },
+    "training": {
+        "label": "Training Log",
+        "fields": [
+            ("participants", "Training participants", True, True),
+            ("score", "Score / info (optional)", False, False),
             ("notes", "Notes (optional)", True, False),
         ],
     },
