@@ -10,7 +10,7 @@ import tempfile
 import threading
 from datetime import timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
+from typing import Optional, List
 
 import aiohttp
 import aiosqlite
@@ -733,16 +733,22 @@ class LogModal(discord.ui.Modal):
         await i.followup.send(f"✅ Log #{log_id} submitted for review.", ephemeral=True)
 
 
-async def start_log(i: discord.Interaction, log_type, result, files, extra=None):
-    files = [f for f in files if f]
+async def start_log(i: discord.Interaction, log_type, result, files: List[Optional[discord.Attachment]], extra=None):
+    # تصفية الملفات المرفوعة وجعلها متاح إرفاقها بكل مرونة (صور أو فيديوهات)
+    files = [f for f in files if f is not None]
+    
     if not i.guild or not isinstance(i.user, discord.Member):
         return await i.response.send_message("Use this command inside the server.", ephemeral=True)
     if not await can_submit(i.user, log_type):
         return await i.response.send_message("You don't have permission to submit this log type.", ephemeral=True)
     
-    # فحص ملفات الحرب (يجب أن يكون أكثر من ملف واحد - على الأقل ملفين)
+    # فحص حرب الكرو (يجب ألا تقل عن ملفين)
     if log_type == "war" and len(files) < 2:
         return await i.response.send_message("❌ Crew War requires **at least 2 attachments** (images or videos). | حرب الكرو تتطلب ملفين على الأقل (صور أو فيديوهات).", ephemeral=True)
+    
+    # باقي اللوجات تتطلب ملف واحد على الأقل (صورة أو فيديو) كشرط لإثبات النتيجة
+    if log_type != "war" and len(files) < 1:
+        return await i.response.send_message("❌ You must attach at least **one image or video** as proof. | يجب إرفاق صورة أو فيديو واحد على الأقل كدليل.", ephemeral=True)
     
     limit = await rule("daily_limit")
     if limit:
@@ -762,8 +768,8 @@ async def start_log(i: discord.Interaction, log_type, result, files, extra=None)
     await i.response.send_modal(LogModal(log_type, result, files, extra or {}))
 
 
-# ================================================================ الأوامر المعدلة
-@bot.tree.command(name="log-war", description="Log a Crew War (min 2 attachments required) | تسجيل حرب كرو")
+# ================================================================ الأوامر (مع دعم مرن للصور والفيديوهات)
+@bot.tree.command(name="log-war", description="Log a Crew War (min 2 attachments: images/videos) | تسجيل حرب كرو")
 @app_commands.choices(result=RESULT_CHOICES)
 @app_commands.describe(
     result="Win or Loss | نتيجة الحرب",
@@ -790,11 +796,11 @@ async def log_war(i: discord.Interaction, result: app_commands.Choice[str],
     await start_log(i, "war", result.value, [file1, file2, file3], extra)
 
 
-@bot.tree.command(name="log-1v1", description="Log a 1v1 fight against opponent | تسجيل فايت 1v1")
+@bot.tree.command(name="log-1v1", description="Log a 1v1 fight (Image/Video supported) | تسجيل فايت 1v1")
 @app_commands.choices(result=RESULT_CHOICES)
 @app_commands.describe(
     result="Win or Loss | النتيجة",
-    proof1="Proof (Image/Video) | الدليل الأول",
+    proof1="Proof (Image or Video) | الدليل الأول",
     proof2="Additional proof (Optional) | دليل إضافي",
     youtube_link="Optional YouTube highlights link | رابط يوتيوب (اختياري)"
 )
@@ -807,11 +813,11 @@ async def log_1v1(i: discord.Interaction, result: app_commands.Choice[str],
     await start_log(i, "1v1", result.value, [proof1, proof2], extra)
 
 
-@bot.tree.command(name="log-2v2", description="Log a 2v2 fight | تسجيل فايت 2v2")
+@bot.tree.command(name="log-2v2", description="Log a 2v2 fight (Image/Video supported) | تسجيل فايت 2v2")
 @app_commands.choices(result=RESULT_CHOICES)
 @app_commands.describe(
     result="Win or Loss | النتيجة",
-    proof1="Proof (Image/Video) | الدليل الأول",
+    proof1="Proof (Image or Video) | الدليل الأول",
     proof2="Additional proof (Optional) | دليل إضافي",
     youtube_link="Optional YouTube highlights link | رابط يوتيوب (اختياري)",
     teammate="Your teammate in 2v2 | زميلك معك في الفريق"
@@ -828,9 +834,9 @@ async def log_2v2(i: discord.Interaction, result: app_commands.Choice[str],
     await start_log(i, "2v2", result.value, [proof1, proof2], extra)
 
 
-@bot.tree.command(name="log-training", description="Log a training session | تسجيل تدريب داخلي")
+@bot.tree.command(name="log-training", description="Log training (Image/Video supported) | تسجيل تدريب داخلي")
 @app_commands.describe(
-    proof1="Proof (Image/Video) | الدليل الأول",
+    proof1="Proof (Image or Video) | الدليل الأول",
     proof2="Additional proof (Optional) | دليل إضافي"
 )
 async def log_training(i: discord.Interaction, proof1: discord.Attachment,
@@ -838,10 +844,10 @@ async def log_training(i: discord.Interaction, proof1: discord.Attachment,
     await start_log(i, "training", None, [proof1, proof2])
 
 
-@bot.tree.command(name="log-tryout", description="Log a tryout (mention candidate) | تسجيل تراي أوت")
+@bot.tree.command(name="log-tryout", description="Log a tryout (Image/Video supported) | تسجيل تراي أوت")
 @app_commands.choices(result=TRYOUT_CHOICES)
 @app_commands.describe(candidate="Tryout candidate | المرشح للتراي أوت", result="Passed or Failed | النتيجة",
-                       proof="Proof (Image/Video) | صورة أو فيديو الدليل",
+                       proof="Proof (Image or Video) | صورة أو فيديو الدليل",
                        tester="Tester getting points (Default: you) | المسؤول عن الاختبار")
 async def log_tryout(i: discord.Interaction, candidate: discord.Member,
                      result: app_commands.Choice[str], proof: discord.Attachment,
