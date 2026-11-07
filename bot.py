@@ -27,7 +27,7 @@ DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "bot_data.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
-BOT_VERSION = "v2.5.1"
+BOT_VERSION = "v2.5.2"
 
 
 # --- سيرفر ويب مصغر لـ Railway ---
@@ -104,13 +104,22 @@ PERIOD_CHOICES = [
 ]
 RULE_CHOICES = [app_commands.Choice(name=l[:100], value=k) for k, l in RULE_LABELS.items()]
 
+BACKUP_SCOPE_CHOICES = [
+    app_commands.Choice(name="Full Database (قاعدة البيانات كاملة - إعدادات ولوجات)", value="full"),
+    app_commands.Choice(name="Today's Activity (نشاط ولوجات اليوم فقط)", value="today"),
+]
+BACKUP_DEST_CHOICES = [
+    app_commands.Choice(name="Here in chat (هنا في الشات)", value="chat"),
+    app_commands.Choice(name="Bot Owner DM (إرسال للخاص لصاحب البوت)", value="owner"),
+]
+
 UPDATE_PRESETS = {
     "bot_patch": {
         "label": "🤖 Bot Patch Update / تحديث جديد للبوت",
         "title_en": f"DragonSlayerBot Update {BOT_VERSION}",
         "title_ar": f"تحديث نظام البوت {BOT_VERSION}",
-        "desc_en": "• Automatic Bot Manual & Command Guide Integration.\n• New Role Ping Assignment for Patch & Help Notifications.\n• Multi-Server Isolated Command Role System.\n• Version Control Logging.",
-        "desc_ar": "• إرسال دليل البوت والشرح تلقائياً عند أول تحديث.\n• تخصيص رتبة منشن لرسائل الشرح والتحديثات التلقائية.\n• عزل كامل ونظام صلاحيات مخصص للأوامر حسب الرتب.\n• تتبع تلقائي لرقم نسخة البوت والتحديثات."
+        "desc_en": "• Advanced Backup System with Scope & Destination selection.\n• Full Database & Today's Activity export options.\n• Automatic Bot Manual & Command Guide Integration.\n• Secure Owner DM delivery support.",
+        "desc_ar": "• نظام نسخ احتياطي متطور مع تحديد النطاق والوجهة.\n• تصدير قاعدة البيانات الكاملة أو نشاط اليوم فقط.\n• إرسال الملفات تلقائياً لخاص صاحب البوت (Owner DM).\n• تتبع وتحديثات تلقائية لرقم النسخة."
     },
     "crew_update": {
         "label": "⚔️ Crew Policy & Ranks / تحديث الكرو والرتب",
@@ -457,14 +466,18 @@ async def audit(text, guild):
             pass
 
 
-async def dm_owner(text):
+async def dm_owner(text, file=None):
     if not owner_id():
-        return
+        return False
     try:
         user = await bot.fetch_user(owner_id())
-        await user.send(text)
+        if file:
+            await user.send(text, file=file)
+        else:
+            await user.send(text)
+        return True
     except (discord.HTTPException, discord.NotFound):
-        pass
+        return False
 
 
 async def get_member(guild, user_id):
@@ -926,20 +939,19 @@ def get_help_embeds():
     )
     embed2.add_field(
         name="⚙️ 4. Admin & Security Setup",
-        value="• `/set-cmd-role`: Lock commands to specific roles.\n"
+        value="• `/backup`: Advanced backup generator (Full or Today, Chat or Owner DM).\n"
+              "• `/set-cmd-role`: Lock commands to specific roles.\n"
               "• `/setchannel`: Configure Review, Log & Audit channels.\n"
               "• `/setping`: Set ping roles for new logs.\n"
               "• `/setroles`: Assign review & submission permissions.\n"
               "• `/pending`: Review waiting logs.\n"
-              "• `/revoke-log`: Cancel accepted log & retract points.\n"
-              "• `/inactive`: Identify inactive crew members.",
+              "• `/revoke-log`: Cancel accepted log & retract points.",
         inline=False
     )
     return [embed1, embed2]
 
 
 async def check_and_notify_auto_update(guild: discord.Guild):
-    """إرسال إشعار تحديث البوت تلقائياً ومستقل لكل سيرفر بناءً على رقم النسخة الحالية."""
     last_ver = await get_setting(f"state:bot_version:{guild.id}")
     if last_ver != BOT_VERSION:
         await set_setting(f"state:bot_version:{guild.id}", BOT_VERSION)
@@ -1048,7 +1060,6 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
     ping_role_id = await cfg_get(i.guild.id, "all", "update_ping")
     ping_text = f"<@&{ping_role_id}>\n" if ping_role_id else ""
 
-    # فحص ما إذا كان الشرح قد تم إرساله من قبل في هذا السيرفر أم لا
     has_sent_manual = await get_setting(f"state:help_manual_sent:{i.guild.id}")
     if not has_sent_manual:
         embeds = get_help_embeds()
@@ -1073,6 +1084,80 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
         await i.followup.send(f"✅ Update preset **{preset.name}** published to {target_ch.mention}!", ephemeral=True)
     except discord.HTTPException as e:
         await i.followup.send(f"❌ Failed to send update message: {e}", ephemeral=True)
+
+
+# ================================================================ أمر الـ Backup المتقدم الجديد
+def _backup_file(path):
+    src = sqlite3.connect(DB)
+    dst = sqlite3.connect(path)
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+
+@bot.tree.command(name="backup", description="Advanced backup tool (Full / Today, Chat / Owner DM) | أداة النسخ الاحتياطي المتقدمة")
+@app_commands.choices(scope=BACKUP_SCOPE_CHOICES, destination=BACKUP_DEST_CHOICES)
+@app_commands.describe(
+    scope="Choose backup scope | اختر نطاق النسخ الاحتياطي",
+    destination="Choose where to send file | اختر مكان إرسال الملف"
+)
+async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], destination: app_commands.Choice[str]):
+    if not is_editor(i.user):
+        return await i.response.send_message("❌ No permission.", ephemeral=True)
+    if not await check_cmd_perm(i, "backup"):
+        return await i.response.send_message("❌ You don't have the required role to use this command.", ephemeral=True)
+
+    await i.response.defer(ephemeral=True)
+
+    file_to_send = None
+    filename = ""
+
+    if scope.value == "full":
+        filename = f"crewbot-full-backup-{now_utc():%Y%m%d-%H%M}.db"
+        path = os.path.join(tempfile.gettempdir(), filename)
+        await asyncio.to_thread(_backup_file, path)
+        file_to_send = discord.File(path, filename=filename)
+    else:
+        # نشاط اليوم فقط (سجلات ولوجات اليوم)
+        today_str = now_utc().strftime("%Y-%m-%d")
+        filename = f"crewbot-today-activity-{today_str}.json"
+        
+        async with aiosqlite.connect(DB) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM logs WHERE guild_id=? AND created_at >= ?", (i.guild.id, today_str))
+            today_logs = [dict(r) for r in await cur.fetchall()]
+            
+            cur = await db.execute("SELECT * FROM point_events WHERE guild_id=? AND created_at >= ?", (i.guild.id, today_str))
+            today_events = [dict(r) for r in await cur.fetchall()]
+
+        data = {
+            "guild_id": i.guild.id,
+            "date": today_str,
+            "logs": today_logs,
+            "point_events": today_events,
+            "exported_at": now_utc().isoformat()
+        }
+        
+        path = os.path.join(tempfile.gettempdir(), filename)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            
+        file_to_send = discord.File(path, filename=filename)
+
+    try:
+        if destination.value == "owner":
+            success = await dm_owner(f"🗄️ **New Server Backup** (`{scope.name}`) from guild **{i.guild.name}** requested by {i.user.mention}:", file=file_to_send)
+            if success:
+                await i.followup.send("✅ Backup file has been successfully sent to the Bot Owner's DMs!", ephemeral=True)
+            else:
+                await i.followup.send("❌ Failed to send backup to owner's DM (Check OWNER_ID or DMs settings). Sending here instead:", file=file_to_send, ephemeral=True)
+        else:
+            await i.followup.send(f"🗄️ **Backup File ({scope.name}):**", file=file_to_send, ephemeral=True)
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
 
 
 @bot.tree.command(name="set-log-template", description="Customize log format/template for a specific log type | تخصيص شكل اللوج لنوع معين")
@@ -1420,20 +1505,6 @@ async def season_top(i: discord.Interaction, name: str):
     if not rows: return await i.response.send_message("Season not found.")
     text = f"**Season {name}**\n" + "\n".join(f"**{n}.** <@{u}> — {p}" for n, (u, p) in enumerate(rows, 1))
     await i.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
-
-
-@bot.tree.command(name="backup", description="Database backup | نسخة احتياطية")
-async def backup_cmd(i: discord.Interaction):
-    if not is_editor(i.user): return await i.response.send_message("❌ No permission.", ephemeral=True)
-    await i.response.defer(ephemeral=True)
-    path = os.path.join(tempfile.gettempdir(), f"crewbot-backup-{now_utc():%Y%m%d-%H%M}.db")
-    src = sqlite3.connect(DB)
-    dst = sqlite3.connect(path)
-    src.backup(dst)
-    dst.close()
-    src.close()
-    try: await i.followup.send("🗄️ Database Backup File:", file=discord.File(path), ephemeral=True)
-    finally: os.unlink(path)
 
 
 @tasks.loop(minutes=10)
