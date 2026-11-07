@@ -28,7 +28,7 @@ DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "bot_config_snapshot.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
-BOT_VERSION = "v2.8.0"
+BOT_VERSION = "v2.8.1"
 
 # إعدادات الأمان للملفات المرفقة
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".mov", ".webm", ".mkv"}
@@ -43,7 +43,7 @@ def run_dummy_server():
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"DragonSlayerBot v2.8.0 Production-Ready is online!")
+            self.wfile.write(b"DragonSlayerBot v2.8.1 Production-Ready is online!")
 
         def log_message(self, format, *args):
             pass
@@ -232,16 +232,6 @@ CREATE TABLE IF NOT EXISTS cmd_roles(
     role_id INTEGER, 
     PRIMARY KEY(guild_id, cmd_name)
 );
-
--- Indexes for Optimal Performance
-CREATE INDEX IF NOT EXISTS idx_logs_guild_status ON logs(guild_id, status);
-CREATE INDEX IF NOT EXISTS idx_logs_author_created ON logs(guild_id, author_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_logs_season ON logs(guild_id, season_id);
-CREATE INDEX IF NOT EXISTS idx_point_events_guild_season ON point_events(guild_id, season_id);
-CREATE INDEX IF NOT EXISTS idx_point_events_user ON point_events(guild_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_point_events_created ON point_events(guild_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_hashes_hash ON hashes(hash);
-CREATE INDEX IF NOT EXISTS idx_cmd_roles_guild ON cmd_roles(guild_id);
 """
 
 LOG_ID_RE = re.compile(r"Log #(\d+)")
@@ -327,8 +317,30 @@ async def init_db():
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA foreign_keys=ON;")
         await db.execute("PRAGMA busy_timeout=5000;")
+        
+        # 1. إنشاء الجداول الأساسية
         await db.executescript(SCHEMA)
+        
+        # 2. فحص وإضافة العمود الناقص تلقائياً للجداول القديمة لمنع الكراش
+        cur = await db.execute("PRAGMA table_info(logs);")
+        columns = [row[1] for row in await cur.fetchall()]
+        if "guild_id" not in columns:
+            await db.execute("ALTER TABLE logs ADD COLUMN guild_id INTEGER NOT NULL DEFAULT 0;")
+
+        # 3. إنشاء الفهارس بأمان
+        indexes_script = """
+        CREATE INDEX IF NOT EXISTS idx_logs_guild_status ON logs(guild_id, status);
+        CREATE INDEX IF NOT EXISTS idx_logs_author_created ON logs(guild_id, author_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_logs_season ON logs(guild_id, season_id);
+        CREATE INDEX IF NOT EXISTS idx_point_events_guild_season ON point_events(guild_id, season_id);
+        CREATE INDEX IF NOT EXISTS idx_point_events_user ON point_events(guild_id, user_id);
+        CREATE INDEX IF NOT EXISTS idx_point_events_created ON point_events(guild_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_hashes_hash ON hashes(hash);
+        CREATE INDEX IF NOT EXISTS idx_cmd_roles_guild ON cmd_roles(guild_id);
+        """
+        await db.executescript(indexes_script)
         await db.commit()
+        
     await save_config_snapshot_json()
 
 
@@ -795,7 +807,6 @@ async def accept_log(i: discord.Interaction):
     recips = await recipients_for(row, data)
     stamp = now_utc().isoformat()
     
-    # 🌟 CRITICAL FIX: Use the season_id stored when log was created, NOT current season!
     season = row["season_id"] or "main"
 
     totals = {}
@@ -1337,7 +1348,6 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], de
     if not await check_cmd_perm(i, "backup") or not is_editor(i.user):
         return await i.response.send_message("❌ No permission.", ephemeral=True)
 
-    # 🛡️ SECURITY CHECK: Full database backup is strictly restricted to Bot Owner and DM!
     if scope.value == "full":
         if not owner_id() or i.user.id != owner_id():
             return await i.response.send_message(
@@ -1695,7 +1705,7 @@ async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], 
 
 @bot.tree.command(name="set-rank-points", description="Set rank points threshold & sync ranks | تحديد نقاط رتب السلم وتحديث الرتب")
 @app_commands.choices(rank=RANK_CHOICES)
-async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str], points: app_commands.Range[int, 0, 100000]):
+async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str], points: app_commands.Range[int, 0, 10000]:
     if not await check_cmd_perm(i, "set-rank-points") or not is_editor(i.user): return await i.response.send_message("❌ No permission.", ephemeral=True)
     await i.response.defer(ephemeral=True)
     await set_setting(i.guild.id, "rank:" + rank.value, points)
@@ -1965,7 +1975,6 @@ async def season_reset(i: discord.Interaction, name: str, confirm: str):
     async with aiosqlite.connect(DB) as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
-            # 🛡️ Prevent season name collision/overwrite
             cur = await db.execute("SELECT 1 FROM season_archive WHERE season=? AND guild_id=? LIMIT 1", (name, i.guild.id))
             if await cur.fetchone():
                 await db.rollback()
@@ -2035,7 +2044,7 @@ async def maintenance():
         except Exception as e:
             print(f"⚠️ Maintenance Task 1 error: {e}")
 
-        # 2. Automated Scheduled Backups (Ensuring true success before updating timestamp)
+        # 2. Automated Scheduled Backups
         for guild in bot.guilds:
             try:
                 backup_hrs = await rule(guild.id, "backup_hours")
