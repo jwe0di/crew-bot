@@ -454,7 +454,7 @@ NO_PERM = "You don't have permission to modify points."
 POINT_CHOICES = [app_commands.Choice(name=l, value=k) for k, l in config.POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in config.LADDER]
 
-# --- أمر /setchannel مصمم تماماً بنفس طريقة أوامر اللوجات (اختيار النوع ثم تحديد الروم) ---
+# --- أمر /setchannel بنفس نمط وأسلوب أوامر اللوجات تماماً ---
 @bot.tree.command(name="setchannel", description="تخصيص رومات البوت لأنواع اللوجات المختلفة")
 @app_commands.choices(channel_type=[
     app_commands.Choice(name="Review Channel (روم الريفيوهات)", value="review_channel"),
