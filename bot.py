@@ -20,13 +20,13 @@ import config
 load_dotenv()
 DB = "crewbot.db"
 
-# --- سيرفر ويب وهمي لمنع Railway من إغلاق البوت ---
+# --- سيرفر ويب مصغر لتلبية شروط Railway ومنع إغلاق البوت ---
 def run_dummy_server():
     class SimpleHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"DragonSlayerBot is online and running!")
+            self.wfile.write(b"DragonSlayerBot is online and running 24/7!")
         def log_message(self, format, *args):
             pass
 
@@ -35,7 +35,7 @@ def run_dummy_server():
     server.serve_forever()
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
-# ---------------------------------------------
+# --------------------------------------------------------
 
 RESULT_LABEL = {"win": "✅ Win", "loss": "❌ Loss"}
 RESULT_CHOICES = [
@@ -472,7 +472,6 @@ NO_PERM = "You don't have permission to modify points."
 POINT_CHOICES = [app_commands.Choice(name=l, value=k) for k, l in config.POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in config.LADDER]
 
-# --- أمر /setchannel مصحح بأسماء خيارات إنجليزية لضمان ظهوره الفوري ---
 @bot.tree.command(name="setchannel", description="Set bot channels for reviews, logs, and audit")
 @app_commands.choices(channel_type=[
     app_commands.Choice(name="Review Channel", value="review_channel"),
