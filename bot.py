@@ -20,10 +20,8 @@ import config
 
 load_dotenv()
 
-# مسار الداتابيز. على Railway حط Volume واكتب DB_PATH=/data/crewbot.db في Variables
 DB = os.getenv("DB_PATH", "crewbot.db")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
-
 
 # --- سيرفر ويب مصغر لـ Railway ---
 def run_dummy_server():
@@ -38,7 +36,6 @@ def run_dummy_server():
 
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
-
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 # ---------------------------------
@@ -111,11 +108,6 @@ class CrewBot(discord.Client):
     async def setup_hook(self):
         await init_db()
         self.add_view(ReviewView())
-        # مسح أي أوامر "عامة" قديمة عشان متتكررش مع أوامر السيرفر
-        try:
-            await self.http.bulk_upsert_global_commands(self.application_id, [])
-        except Exception as e:
-            print(f"⚠️ Could not clear global commands: {e}")
 
     async def sync_guild(self, guild: discord.Guild):
         try:
@@ -124,7 +116,7 @@ class CrewBot(discord.Client):
             print(f"✅ Commands synced to {guild.name} ({guild.id})")
             return True
         except Exception as e:
-            print(f"❌ Sync failed for {guild.id}: {e}")
+            print(f"❌ Sync failed for {guild.id} ({guild.name}): {e}")
             return False
 
     async def on_ready(self):
@@ -132,7 +124,10 @@ class CrewBot(discord.Client):
         if not self._synced:
             self._synced = True
             for g in self.guilds:
-                await self.sync_guild(g)
+                try:
+                    await self.sync_guild(g)
+                except Exception as e:
+                    print(f"Skipping sync for guild {g.id}: {e}")
 
     async def on_guild_join(self, guild):
         await self.sync_guild(guild)
@@ -141,7 +136,6 @@ class CrewBot(discord.Client):
 bot = CrewBot()
 
 
-# ================================================================ DB helpers
 async def init_db():
     async with aiosqlite.connect(DB) as db:
         await db.executescript(SCHEMA)
@@ -149,7 +143,6 @@ async def init_db():
             await db.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", ("points:" + k, v))
         for name, p in config.LADDER:
             await db.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", ("rank:" + name, p))
-        # ترحيل القنوات من النظام القديم
         cur = await db.execute("SELECT guild_id, review_channel, log_channel, audit_channel FROM guild_channels")
         for g, r, l, a in await cur.fetchall():
             for key, v in (("review_channel", r), ("log_channel", l), ("audit_channel", a)):
@@ -174,7 +167,6 @@ async def set_setting(key, value):
 
 
 async def cfg_get(guild_id, log_type, key):
-    """قيمة خاصة بنوع اللوج، وإلا القيمة العامة (all)، وإلا القيمة الاحتياطية من config."""
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute(
             "SELECT value FROM guild_cfg WHERE guild_id=? AND key=? AND log_type IN (?, 'all') "
@@ -240,7 +232,6 @@ async def points_for(log_type, result):
     return v if v is not None else config.DEFAULT_POINTS.get(key, 0)
 
 
-# ================================================================ permissions
 def has_role(member, names) -> bool:
     return any(
         n.lower() in r.name.lower()
@@ -282,7 +273,6 @@ async def can_submit(member, log_type) -> bool:
     return True
 
 
-# ================================================================ misc helpers
 async def audit(text, guild):
     ch_id = await cfg_get(guild.id, "all", "audit_channel")
     ch = guild.get_channel(ch_id) if ch_id else None
@@ -321,7 +311,6 @@ def mentions(role_id=None, user_ids=None):
     )
 
 
-# ================================================================ فحص الملفات
 async def video_age_days(data: bytes) -> Optional[int]:
     path = None
     try:
@@ -364,7 +353,6 @@ async def inspect_blobs(blobs):
     return hashes, flags
 
 
-# ================================================================ شكل اللوج
 DIVIDER = ("<:EU1:1449430079611600936> ●▬▬▬▬▬▬▬▬▬▬▬☭  <:Grok2:1513556052036030584> "
            "☭▬▬▬▬▬▬▬▬▬▬▬● <:EU1:1449430079611600936>")
 ANGEL = "<:celestial_angel:1455574559062360198>"
@@ -381,7 +369,7 @@ def clip(v, n=350):
 def render(log_id, log_type, author_id, data, result, flags=None, status="pending",
            points=None, reviewer_id=None, reason=None, pts_to=None):
     label = config.LOG_TYPES[log_type]["label"]
-    d = lambda k, default="-": clip(data.get(k, default))  # noqa: E731
+    d = lambda k, default="-": clip(data.get(k, default))
     m = f"{ANGEL}  **{label}**  {ANGEL}  `Log #{log_id}`\n\n{DIVIDER}\n\n"
     m += f"{MOON} **Logged by:** <@{author_id}>\n"
 
@@ -424,7 +412,6 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
     return m[:1950]
 
 
-# ================================================================ الترقية
 async def apply_promotion(guild, member, total):
     ladder = await get_ladder()
     roles = [discord.utils.find(lambda r, n=n: n.lower() in r.name.lower(), guild.roles)
@@ -455,7 +442,6 @@ async def apply_promotion(guild, member, total):
     return roles[target]
 
 
-# ================================================================ المراجعة
 async def accept_log(i: discord.Interaction):
     log_id = parse_log_id(i.message)
     row = await get_log(log_id) if log_id else None
@@ -470,7 +456,6 @@ async def accept_log(i: discord.Interaction):
     data = json.loads(row["data"])
     flags = json.loads(row["flags"] or "[]")
     pts = await points_for(row["type"], row["result"])
-    # في التراي أوت النقط بتروح للي عمل التراي أوت
     target_id = int(data["tester_id"]) if row["type"] == "tryout" and data.get("tester_id") else row["author_id"]
 
     async with aiosqlite.connect(DB) as db:
@@ -487,7 +472,6 @@ async def accept_log(i: discord.Interaction):
         total = (await cur.fetchone())[0]
         await db.commit()
 
-    # نشر اللوج في القناة العامة
     pub_id = await cfg_get(i.guild.id, row["type"], "log_channel")
     log_ch = i.guild.get_channel(pub_id) if pub_id else None
     if log_ch:
@@ -540,7 +524,7 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason"):
         flags = json.loads(row["flags"] or "[]")
         text = render(self.log_id, row["type"], row["author_id"], data, row["result"], flags,
                       "rejected", reviewer_id=i.user.id, reason=self.reason.value)
-        await self.message.edit(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
+        await i.message.edit(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
         await i.response.send_message("Log rejected.", ephemeral=True)
         try:
             author = await bot.fetch_user(row["author_id"])
@@ -570,7 +554,6 @@ class ReviewView(discord.ui.View):
         await i.response.send_modal(RejectModal(log_id, i.message))
 
 
-# ================================================================ إنشاء اللوج
 class LogModal(discord.ui.Modal):
     def __init__(self, log_type, result, files, extra):
         super().__init__(title=config.LOG_TYPES[log_type]["label"][:45])
@@ -626,7 +609,6 @@ class LogModal(discord.ui.Modal):
             except discord.Forbidden:
                 raise
             except discord.HTTPException:
-                # غالبًا الملفات أكبر من حد الرفع، نبعت روابط بدل الملفات
                 await ch.send(content=content, view=ReviewView(), allowed_mentions=am)
                 await ch.send("**Attachments (links expire after a while):**\n" + "\n".join(a.url for a, _ in blobs),
                               allowed_mentions=discord.AllowedMentions.none())
@@ -684,7 +666,6 @@ async def log_tryout(i: discord.Interaction, candidate: discord.Member, proof: d
     await start_log(i, "tryout", None, [proof], extra)
 
 
-# ================================================================ أوامر الإعدادات
 NO_PERM = "❌ مش معاك صلاحية."
 
 
@@ -775,7 +756,6 @@ async def sync_cmd(i: discord.Interaction):
     await i.followup.send("✅ اتعملت مزامنة. اقفل ديسكورد وافتحه (أو Ctrl+R)." if ok else "❌ فشلت المزامنة، شوف الـ Logs.")
 
 
-# ================================================================ النقط
 POINT_CHOICES = [app_commands.Choice(name=l, value=k) for k, l in config.POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in config.LADDER]
 
@@ -839,7 +819,7 @@ async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = 
     await i.response.send_message(msg, allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.tree.command(name="leaderboard", description="Top 10 members by points")
+@bot.tree.command(name="leaderboard", description="Top 10 members by points.points by points")
 async def leaderboard(i: discord.Interaction):
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT user_id, points FROM members ORDER BY points DESC LIMIT 10")
