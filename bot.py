@@ -505,7 +505,7 @@ async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str]
         return await i.response.send_message(NO_PERM, ephemeral=True)
     old = await get_setting("rank:" + rank.value)
     await set_setting("rank:" + rank.value, points)
-    await audit("✏️ " + i.user.mention + " changed points for rank **" + rank.name + "** from " + str(old) + " to " + str(points), i.guild)
+    await audit("✏️ " + i.user.mention + " changed points for rank **" + rank.name + "** from " + str(old) + " + " + str(points), i.guild)
     await i.response.send_message("Done. **" + rank.name + "** requires " + str(points) + " points.", ephemeral=True)
 
 bot.run(os.getenv("DISCORD_TOKEN"))
