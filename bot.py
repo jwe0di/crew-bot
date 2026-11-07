@@ -6,6 +6,8 @@ import json
 import os
 import tempfile
 from typing import Optional
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 import aiosqlite
 import discord
@@ -17,6 +19,23 @@ import config
 
 load_dotenv()
 DB = "crewbot.db"
+
+# --- سيرفر ويب وهمي لمنع Railway من إغلاق البوت ---
+def run_dummy_server():
+    class SimpleHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"DragonSlayerBot is online and running!")
+        def log_message(self, format, *args):
+            pass # منع زحمة اللوجز
+
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_dummy_server, daemon=True).start()
+# ---------------------------------------------
 
 RESULT_LABEL = {"win": "✅ Win", "loss": "❌ Loss"}
 RESULT_CHOICES = [
@@ -69,11 +88,10 @@ class CrewBot(discord.Client):
 
 bot = CrewBot()
 
-# --- مهمة خلفية لعمل ريفرش ونشاط للبوت كل ساعة بدون ضياع أي بيانات ---
 @tasks.loop(hours=1.0)
 async def hourly_refresh_task():
     try:
-        print("🔄 Running scheduled hourly background refresh (Data & Database are safe)...")
+        print("🔄 Running scheduled hourly background refresh...")
     except Exception as e:
         print(f"Error in hourly refresh: {e}")
 
@@ -258,7 +276,7 @@ async def apply_promotion(guild, member, total):
 
 async def accept_log(i: discord.Interaction):
     if not isinstance(i.user, discord.Member) or not is_higher_than_bot(i.user, i.guild):
-        return await i.response.send_message("You don't have permission (Must have a higher role than the bot).", ephemeral=True)
+        return await i.response.send_message("You don't have permission.", ephemeral=True)
     log_id = log_id_from_msg(i.message)
     row = await get_log(log_id)
     if row["author_id"] == i.user.id and row["type"] != "tryout":
@@ -354,7 +372,7 @@ class ReviewView(discord.ui.View):
     @discord.ui.button(label="Reject", emoji="❌", style=discord.ButtonStyle.danger, custom_id="log:reject")
     async def reject(self, i: discord.Interaction, button: discord.ui.Button):
         if not isinstance(i.user, discord.Member) or not is_higher_than_bot(i.user, i.guild):
-            return await i.response.send_message("You don't have permission (Must have a higher role than the bot).", ephemeral=True)
+            return await i.response.send_message("You don't have permission.", ephemeral=True)
         log_id = log_id_from_msg(i.message)
         row = await get_log(log_id)
         if row["author_id"] == i.user.id and row["type"] != "tryout":
@@ -412,7 +430,7 @@ class LogModal(discord.ui.Modal):
                 await ch.send(content=msg_content, view=ReviewView())
 
         if flags:
-            await dm_owner("⚠️ " + i.user.mention + " (" + str(i.user) + ") submitted Log #" + str(log_id) + " with warnings:\n" + "\n".join(flags))
+            await dm_owner("⚠️ " + i.user.mention + " submitted Log #" + str(log_id) + " with warnings:\n" + "\n".join(flags))
         await i.followup.send("✅ Log #" + str(log_id) + " submitted for review.", ephemeral=True)
 
 async def start_log(i: discord.Interaction, log_type, result, files):
@@ -454,7 +472,6 @@ NO_PERM = "You don't have permission to modify points."
 POINT_CHOICES = [app_commands.Choice(name=l, value=k) for k, l in config.POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in config.LADDER]
 
-# --- أمر /setchannel بنفس نمط وأسلوب أوامر اللوجات تماماً ---
 @bot.tree.command(name="setchannel", description="تخصيص رومات البوت لأنواع اللوجات المختلفة")
 @app_commands.choices(channel_type=[
     app_commands.Choice(name="Review Channel (روم الريفيوهات)", value="review_channel"),
@@ -487,7 +504,7 @@ async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str]
         return await i.response.send_message(NO_PERM, ephemeral=True)
     old = await get_setting("rank:" + rank.value)
     await set_setting("rank:" + rank.value, points)
-    await audit("✏️ " + i.user.mention + " changed points for rank **" + rank.name + "** from " + str(old) + " to " + str(points), i.guild)
+    await audit("✏️ " + i.user.mention + " changed points for rank **" + rank.name + "** from " + str(old) + " + " + str(points), i.guild)
     await i.response.send_message("Done. **" + rank.name + "** requires " + str(points) + " points.", ephemeral=True)
 
 bot.run(os.getenv("DISCORD_TOKEN"))
