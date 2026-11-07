@@ -85,7 +85,7 @@ TRYOUT_CHOICES = [
     app_commands.Choice(name="Passed", value="win"),
     app_commands.Choice(name="Failed", value="loss"),
 ]
-LOG_TYPE_CHOICES = [app_commands.Choice(name="All types (default)", value="all")] + [
+LOG_TYPE_CHOICES = [app_commands.Choice(name="All types (default", value="all")] + [
     app_commands.Choice(name=v["label"], value=k) for k, v in config.LOG_TYPES.items()
 ]
 KIND_CHANNEL = [
@@ -321,7 +321,7 @@ async def init_db():
         # 1. إنشاء الجداول الأساسية
         await db.executescript(SCHEMA)
         
-        # 2. فحص وإضافة الأعمدة الناقصة تلقائياً في الجداول القديمة لمنع الكراش
+        # 2. فحص وإضافة الأعمدة الناقصة تلقائياً في الجداول القديمة لمنع أي كراش
         cur = await db.execute("PRAGMA table_info(logs);")
         logs_cols = [row[1] for row in await cur.fetchall()]
         if "guild_id" not in logs_cols:
@@ -1326,7 +1326,7 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
         timestamp=now_utc()
     )
     embed.add_field(name="English Version", value=data["desc_en"], inline=False)
-    embed.add_field(name="التفاصيل بالعربية", value=data["desc_ar"], inline=False)
+    embed.add_field(name="تفاصيل بالعربية", value=data["desc_ar"], inline=False)
     embed.set_footer(text=f"Published by {i.user.display_name} | Version {BOT_VERSION}", icon_url=i.user.display_avatar.url)
 
     try:
