@@ -23,7 +23,6 @@ import config
 
 load_dotenv()
 
-# مسار الداتابيز. على Railway حط Volume واكتب DB_PATH=/data/crewbot.db في Variables
 DB = os.getenv("DB_PATH", "crewbot.db")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
@@ -46,7 +45,6 @@ def run_dummy_server():
 threading.Thread(target=run_dummy_server, daemon=True).start()
 # ---------------------------------
 
-# ---- قواعد قابلة للتعديل بـ /setrule ----
 RULE_DEFAULTS = {
     "daily_limit": 5,
     "reminder_hours": 48,
@@ -303,7 +301,7 @@ async def get_log(log_id):
 
 
 async def points_for(log_type, result):
-    key = f"{log_type}_{result}" if log_type in ("war", "outside") else log_type
+    key = f"{log_type}_{result}" if log_type in ("war", "1v1", "2v2") else log_type
     v = await get_setting("points:" + key)
     return v if v is not None else config.DEFAULT_POINTS.get(key, 0)
 
@@ -312,7 +310,7 @@ async def recipients_for(row, data):
     if row["type"] == "tryout":
         return [int(data.get("tester_id") or row["author_id"])]
     ids = [row["author_id"]]
-    if row["type"] == "war" and await rule("war_participants"):
+    if row["type"] in ("war", "2v2") and await rule("war_participants"):
         for x in data.get("participants", []):
             if int(x) not in ids:
                 ids.append(int(x))
@@ -418,29 +416,6 @@ def ladder_roles(guild):
             for n, _ in config.LADDER]
 
 
-async def video_age_days(data: bytes) -> Optional[int]:
-    path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            f.write(data)
-            path = f.name
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_entries", "format_tags=creation_time", path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await proc.communicate()
-        created = json.loads(out or b"{}").get("format", {}).get("tags", {}).get("creation_time")
-        if not created:
-            return None
-        created = dt.datetime.fromisoformat(created.replace("Z", "+00:00"))
-        return (now_utc() - created).days
-    except (FileNotFoundError, ValueError):
-        return None
-    finally:
-        if path and os.path.exists(path):
-            os.unlink(path)
-
-
 async def inspect_blobs(blobs):
     hashes, flags = [], []
     for att, data in blobs:
@@ -453,14 +428,10 @@ async def inspect_blobs(blobs):
             row = await cur.fetchone()
         if row:
             flags.append(f"{att.filename}: same file was used in Log #{row[0]}")
-        if (att.content_type or "").startswith("video"):
-            age = await video_age_days(data)
-            if age is not None and age > config.MAX_VIDEO_AGE_DAYS:
-                flags.append(f"{att.filename}: video is {age} days old")
     return hashes, flags
 
 
-# ================================================================ شكل اللوج (بالإنجليزية بالكامل)
+# ================================================================ شكل اللوج
 DIVIDER = ("<:EU1:1449430079611600936> ●▬▬▬▬▬▬▬▬▬▬▬☭  <:Grok2:1513556052036030584> "
            "☭▬▬▬▬▬▬▬▬▬▬▬● <:EU1:1449430079611600936>")
 ANGEL = "<:celestial_angel:1455574559062360198>"
@@ -477,19 +448,21 @@ def clip(v, n=350):
 def render(log_id, log_type, author_id, data, result, flags=None, status="pending",
            points=None, reviewer_id=None, reason=None, pts_to=None):
     label = config.LOG_TYPES[log_type]["label"]
-    d = lambda k, default="-": clip(data.get(k, default))  # noqa: E731
+    d = lambda k, default="-": clip(data.get(k, default))
     m = f"{ANGEL}  **{label}**  {ANGEL}  `Log #{log_id}`\n\n{DIVIDER}\n\n"
     m += f"{MOON} **Logged by:** <@{author_id}>\n"
 
     if log_type == "war":
         m += f"{MOON} **Dragon Slayer's Fighters:**\n{ARROW}  {d('my_team')}\n\n{DIVIDER}\n\n"
         m += f"{MOON} **{clip(data.get('crew', 'Enemy Crew'), 60)} Fighters:**\n{ARROW}  {d('their_team')}\n\n"
-    elif log_type == "outside":
+    elif log_type == "1v1":
         m += f"{MOON} **Dragon Slayer's Fighter:**\n{ARROW}  {d('my_fighter')}\n\n{DIVIDER}\n\n"
         m += f"{MOON} **Opponent:**\n{ARROW}  {d('opponent')}\n\n"
-    elif log_type == "internal":
-        m += f"{MOON} **Fighter 1:**\n{ARROW}  {d('p1')}\n\n{DIVIDER}\n\n"
-        m += f"{MOON} **Fighter 2:**\n{ARROW}  {d('p2')}\n\n"
+    elif log_type == "2v2":
+        m += f"{MOON} **Dragon Slayer's Team:**\n{ARROW}  {d('my_team')}\n\n{DIVIDER}\n\n"
+        m += f"{MOON} **Enemy Team:**\n{ARROW}  {d('their_team')}\n\n"
+    elif log_type == "training":
+        m += f"{MOON} **Training Participants:**\n{ARROW}  {d('participants')}\n\n{DIVIDER}\n\n"
     elif log_type == "tryout":
         tester = data.get("tester_id") or author_id
         m += f"{MOON} **Tested by:** <@{tester}>\n"
@@ -505,6 +478,8 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
     m += f"      • **Score:** {d('score')}\n"
     if data.get("notes"):
         m += f"      • **Notes:** {d('notes')}\n"
+    if data.get("youtube_link"):
+        m += f"      • **YouTube Video:** {data.get('youtube_link')}\n"
 
     status_map = {"pending": "⏳ Pending", "accepted": "✅ Accepted", "rejected": "❌ Rejected", "revoked": "🚫 Revoked"}
     m += f"\n**Status:** {status_map[status]}"
@@ -733,7 +708,7 @@ class LogModal(discord.ui.Modal):
             await db_exec("UPDATE logs SET status='rejected', reason=? WHERE id=?",
                           ("failed to post for review", log_id))
             await i.followup.send(
-                f"❌ Failed to post log for review ({reason}). Make sure the review channel is set via /setchannel and the bot has permissions.",
+                f"❌ Failed to post log for review ({reason}). Make sure the review channel is set via /setchannel.",
                 ephemeral=True)
 
         if not ch:
@@ -764,8 +739,11 @@ async def start_log(i: discord.Interaction, log_type, result, files, extra=None)
         return await i.response.send_message("Use this command inside the server.", ephemeral=True)
     if not await can_submit(i.user, log_type):
         return await i.response.send_message("You don't have permission to submit this log type.", ephemeral=True)
-    if log_type == "war" and not any((f.content_type or "").startswith("video") for f in files):
-        return await i.response.send_message("War log requires at least one video attachment.", ephemeral=True)
+    
+    # فحص ملفات الحرب (يجب أن يكون أكثر من ملف واحد - على الأقل ملفين)
+    if log_type == "war" and len(files) < 2:
+        return await i.response.send_message("❌ Crew War requires **at least 2 attachments** (images or videos). | حرب الكرو تتطلب ملفين على الأقل (صور أو فيديوهات).", ephemeral=True)
+    
     limit = await rule("daily_limit")
     if limit:
         since = (now_utc() - timedelta(hours=24)).isoformat()
@@ -784,40 +762,86 @@ async def start_log(i: discord.Interaction, log_type, result, files, extra=None)
     await i.response.send_modal(LogModal(log_type, result, files, extra or {}))
 
 
-# ================================================================ الأوامر (بشرح ثنائي اللغة: عربي / إنجليزي)
-@bot.tree.command(name="log-war", description="Log a Crew War (video required) | تسجيل حرب كرو")
+# ================================================================ الأوامر المعدلة
+@bot.tree.command(name="log-war", description="Log a Crew War (min 2 attachments required) | تسجيل حرب كرو")
 @app_commands.choices(result=RESULT_CHOICES)
-@app_commands.describe(player1="Crew member teammate | لاعب معاك في الطاقم", player2="Second teammate | لاعب ثاني",
-                       player3="Third teammate | لاعب ثالث", player4="Fourth teammate | لاعب رابع")
+@app_commands.describe(
+    result="Win or Loss | نتيجة الحرب",
+    file1="First proof (Image/Video) | الملف الأول",
+    file2="Second proof (Image/Video) | الملف الثاني",
+    file3="Additional proof (Optional) | ملف إضافي ثالث",
+    youtube_link="Optional YouTube highlights link | رابط لقطات يوتيوب (اختياري)",
+    player1="Teammate 1 | لاعب معاك", player2="Teammate 2 | لاعب ثاني",
+    player3="Teammate 3 | لاعب ثالث", player4="Teammate 4 | لاعب رابع"
+)
 async def log_war(i: discord.Interaction, result: app_commands.Choice[str],
-                  video1: discord.Attachment, video2: Optional[discord.Attachment] = None,
-                  video3: Optional[discord.Attachment] = None,
+                  file1: discord.Attachment, file2: discord.Attachment,
+                  file3: Optional[discord.Attachment] = None,
+                  youtube_link: Optional[str] = None,
                   player1: Optional[discord.Member] = None, player2: Optional[discord.Member] = None,
                   player3: Optional[discord.Member] = None, player4: Optional[discord.Member] = None):
     ids = []
     for p in (player1, player2, player3, player4):
         if p and not p.bot and p.id != i.user.id and p.id not in ids:
             ids.append(p.id)
-    await start_log(i, "war", result.value, [video1, video2, video3], {"participants": ids})
+    extra = {"participants": ids}
+    if youtube_link:
+        extra["youtube_link"] = youtube_link
+    await start_log(i, "war", result.value, [file1, file2, file3], extra)
 
 
-@bot.tree.command(name="log-outside", description="Log a 1v1 against an outside/famous player | تسجيل فايت خارجي")
+@bot.tree.command(name="log-1v1", description="Log a 1v1 fight against opponent | تسجيل فايت 1v1")
 @app_commands.choices(result=RESULT_CHOICES)
-async def log_outside(i: discord.Interaction, result: app_commands.Choice[str],
-                      proof1: discord.Attachment, proof2: Optional[discord.Attachment] = None):
-    await start_log(i, "outside", result.value, [proof1, proof2])
+@app_commands.describe(
+    result="Win or Loss | النتيجة",
+    proof1="Proof (Image/Video) | الدليل الأول",
+    proof2="Additional proof (Optional) | دليل إضافي",
+    youtube_link="Optional YouTube highlights link | رابط يوتيوب (اختياري)"
+)
+async def log_1v1(i: discord.Interaction, result: app_commands.Choice[str],
+                  proof1: discord.Attachment, proof2: Optional[discord.Attachment] = None,
+                  youtube_link: Optional[str] = None):
+    extra = {}
+    if youtube_link:
+        extra["youtube_link"] = youtube_link
+    await start_log(i, "1v1", result.value, [proof1, proof2], extra)
 
 
-@bot.tree.command(name="log-internal", description="Log an internal fight between crew members | تسجيل فايت داخلي")
-async def log_internal(i: discord.Interaction, proof1: discord.Attachment,
+@bot.tree.command(name="log-2v2", description="Log a 2v2 fight | تسجيل فايت 2v2")
+@app_commands.choices(result=RESULT_CHOICES)
+@app_commands.describe(
+    result="Win or Loss | النتيجة",
+    proof1="Proof (Image/Video) | الدليل الأول",
+    proof2="Additional proof (Optional) | دليل إضافي",
+    youtube_link="Optional YouTube highlights link | رابط يوتيوب (اختياري)",
+    teammate="Your teammate in 2v2 | زميلك معك في الفريق"
+)
+async def log_2v2(i: discord.Interaction, result: app_commands.Choice[str],
+                  proof1: discord.Attachment, proof2: Optional[discord.Attachment] = None,
+                  youtube_link: Optional[str] = None, teammate: Optional[discord.Member] = None):
+    ids = []
+    if teammate and not teammate.bot and teammate.id != i.user.id:
+        ids.append(teammate.id)
+    extra = {"participants": ids}
+    if youtube_link:
+        extra["youtube_link"] = youtube_link
+    await start_log(i, "2v2", result.value, [proof1, proof2], extra)
+
+
+@bot.tree.command(name="log-training", description="Log a training session | تسجيل تدريب داخلي")
+@app_commands.describe(
+    proof1="Proof (Image/Video) | الدليل الأول",
+    proof2="Additional proof (Optional) | دليل إضافي"
+)
+async def log_training(i: discord.Interaction, proof1: discord.Attachment,
                        proof2: Optional[discord.Attachment] = None):
-    await start_log(i, "internal", None, [proof1, proof2])
+    await start_log(i, "training", None, [proof1, proof2])
 
 
 @bot.tree.command(name="log-tryout", description="Log a tryout (mention candidate) | تسجيل تراي أوت")
 @app_commands.choices(result=TRYOUT_CHOICES)
 @app_commands.describe(candidate="Tryout candidate | المرشح للتراي أوت", result="Passed or Failed | النتيجة",
-                       proof="Proof screenshot | صورة الدليل",
+                       proof="Proof (Image/Video) | صورة أو فيديو الدليل",
                        tester="Tester getting points (Default: you) | المسؤول عن الاختبار")
 async def log_tryout(i: discord.Interaction, candidate: discord.Member,
                      result: app_commands.Choice[str], proof: discord.Attachment,
@@ -848,7 +872,7 @@ async def resubmit(i: discord.Interaction, log_id: int):
         return await i.response.send_message(
             "Could not fetch old attachments. Please create a new log.", ephemeral=True)
     data = json.loads(row["data"])
-    extra = {k: data[k] for k in ("candidate_id", "candidate", "tester_id", "participants") if k in data}
+    extra = {k: data[k] for k in ("candidate_id", "candidate", "tester_id", "participants", "youtube_link") if k in data}
     await i.response.send_modal(LogModal(row["type"], row["result"], files, extra, defaults=data))
 
 
@@ -1094,7 +1118,7 @@ async def top_events(since_iso, types=None, limit=10):
 async def weekly_text():
     since = (now_utc() - timedelta(days=7)).isoformat()
     sections = [("🏆 Top points", None, 10), ("⚔️ Wars", ["war"], 3),
-                ("🥊 Fights", ["outside", "internal"], 3), ("🎯 Tryouts", ["tryout"], 3)]
+                ("🥊 Fights", ["1v1", "2v2"], 3), ("🎯 Tryouts", ["tryout"], 3)]
     lines = ["**📅 Weekly leaderboard (last 7 days)**"]
     for title, types, n in sections:
         rows = await top_events(since, types, n)
@@ -1194,9 +1218,9 @@ async def profile(i: discord.Interaction, member: Optional[discord.Member] = Non
     e.add_field(name="Rank", value=rank_name)
     e.add_field(name="Next rank", value=f"{nxt[0]} ({nxt[1] - total} left)" if nxt else "Max auto rank")
     e.add_field(name="⚔️ Wars", value=f"{agg.get(('war', 'win'), 0)}W - {agg.get(('war', 'loss'), 0)}L")
-    e.add_field(name="🥊 Outside 1v1",
-                value=f"{agg.get(('outside', 'win'), 0)}W - {agg.get(('outside', 'loss'), 0)}L")
-    e.add_field(name="🤝 Internal", value=str(sum(c for (t, _), c in agg.items() if t == "internal")))
+    e.add_field(name="🥊 1v1", value=f"{agg.get(('1v1', 'win'), 0)}W - {agg.get(('1v1', 'loss'), 0)}L")
+    e.add_field(name="👥 2v2", value=f"{agg.get(('2v2', 'win'), 0)}W - {agg.get(('2v2', 'loss'), 0)}L")
+    e.add_field(name="🤝 Training", value=str(sum(c for (t, _), c in agg.items() if t == "training")))
     e.add_field(name="🎯 Tryouts done", value=str(sum(c for (t, _), c in agg.items() if t == "tryout")))
     if link_row:
         e.add_field(name="Roblox", value=link_row[0])
