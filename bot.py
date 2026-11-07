@@ -321,13 +321,20 @@ async def init_db():
         # 1. إنشاء الجداول الأساسية
         await db.executescript(SCHEMA)
         
-        # 2. فحص وإضافة العمود الناقص تلقائياً للجداول القديمة لمنع الكراش
+        # 2. فحص وإضافة الأعمدة الناقصة تلقائياً في الجداول القديمة لمنع الكراش
         cur = await db.execute("PRAGMA table_info(logs);")
-        columns = [row[1] for row in await cur.fetchall()]
-        if "guild_id" not in columns:
+        logs_cols = [row[1] for row in await cur.fetchall()]
+        if "guild_id" not in logs_cols:
             await db.execute("ALTER TABLE logs ADD COLUMN guild_id INTEGER NOT NULL DEFAULT 0;")
+        if "season_id" not in logs_cols:
+            await db.execute("ALTER TABLE logs ADD COLUMN season_id TEXT DEFAULT 'main';")
 
-        # 3. إنشاء الفهارس بأمان
+        cur = await db.execute("PRAGMA table_info(point_events);")
+        pe_cols = [row[1] for row in await cur.fetchall()]
+        if "season_id" not in pe_cols:
+            await db.execute("ALTER TABLE point_events ADD COLUMN season_id TEXT DEFAULT 'main';")
+
+        # 3. إنشاء الفهارس بأمان بعد التأكد من وجود الأعمدة
         indexes_script = """
         CREATE INDEX IF NOT EXISTS idx_logs_guild_status ON logs(guild_id, status);
         CREATE INDEX IF NOT EXISTS idx_logs_author_created ON logs(guild_id, author_id, created_at);
