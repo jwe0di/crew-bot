@@ -28,7 +28,7 @@ def run_dummy_server():
             self.end_headers()
             self.wfile.write(b"DragonSlayerBot is online and running!")
         def log_message(self, format, *args):
-            pass # منع زحمة اللوجز
+            pass
 
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
@@ -472,18 +472,19 @@ NO_PERM = "You don't have permission to modify points."
 POINT_CHOICES = [app_commands.Choice(name=l, value=k) for k, l in config.POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in config.LADDER]
 
-@bot.tree.command(name="setchannel", description="تخصيص رومات البوت لأنواع اللوجات المختلفة")
+# --- أمر /setchannel مصحح بأسماء خيارات إنجليزية لضمان ظهوره الفوري ---
+@bot.tree.command(name="setchannel", description="Set bot channels for reviews, logs, and audit")
 @app_commands.choices(channel_type=[
-    app_commands.Choice(name="Review Channel (روم الريفيوهات)", value="review_channel"),
-    app_commands.Choice(name="Log Channel (روم السجلات العامة)", value="log_channel"),
-    app_commands.Choice(name="Audit Channel (روم الأوديت)", value="audit_channel")
+    app_commands.Choice(name="Review Channel", value="review_channel"),
+    app_commands.Choice(name="Log Channel", value="log_channel"),
+    app_commands.Choice(name="Audit Channel", value="audit_channel")
 ])
 async def setchannel(i: discord.Interaction, channel_type: app_commands.Choice[str], channel: discord.TextChannel):
     if not isinstance(i.user, discord.Member) or not is_higher_than_bot(i.user, i.guild):
         return await i.response.send_message("❌ ليس لديك صلاحية لتغيير الرومات.", ephemeral=True)
     
     await set_guild_channel(i.guild.id, channel_type.value, channel.id)
-    await i.response.send_message(f"✅ تم تعيين **{channel_type.name}** بنجاح إلى: {channel.mention}", ephemeral=True)
+    await i.response.send_message(f"✅ تم تعيين روم **{channel_type.name}** بنجاح إلى: {channel.mention}", ephemeral=True)
 
 @bot.tree.command(name="set-log-points", description="Set points for a specific log type")
 @app_commands.choices(log=POINT_CHOICES)
@@ -504,7 +505,7 @@ async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str]
         return await i.response.send_message(NO_PERM, ephemeral=True)
     old = await get_setting("rank:" + rank.value)
     await set_setting("rank:" + rank.value, points)
-    await audit("✏️ " + i.user.mention + " changed points for rank **" + rank.name + "** from " + str(old) + " + " + str(points), i.guild)
+    await audit("✏️ " + i.user.mention + " changed points for rank **" + rank.name + "** from " + str(old) + " to " + str(points), i.guild)
     await i.response.send_message("Done. **" + rank.name + "** requires " + str(points) + " points.", ephemeral=True)
 
 bot.run(os.getenv("DISCORD_TOKEN"))
