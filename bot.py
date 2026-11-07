@@ -1,6 +1,7 @@
 import io
 import asyncio
 import datetime as dt
+from datetime import timezone
 import hashlib
 import json
 import os
@@ -411,7 +412,7 @@ class LogModal(discord.ui.Modal):
             cur = await db.execute(
                 "INSERT INTO logs(type, author_id, result, data, flags, created_at) VALUES(?,?,?,?,?,?)",
                 (self.log_type, i.user.id, self.result, json.dumps(data, ensure_ascii=False),
-                 json.dumps(flags, ensure_ascii=False), dt.datetime.utcnow().isoformat()))
+                 json.dumps(flags, ensure_ascii=False), dt.datetime.now(timezone.utc).isoformat()))
             log_id = cur.lastrowid
             for h in hashes:
                 await db.execute("INSERT OR IGNORE INTO hashes VALUES(?,?)", (h, log_id))
