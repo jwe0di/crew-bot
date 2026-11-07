@@ -28,7 +28,7 @@ DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "bot_config_snapshot.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
-BOT_VERSION = "v2.8.1"
+BOT_VERSION = "v2.8.2"
 
 # إعدادات الأمان للملفات المرفقة
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".mov", ".webm", ".mkv"}
@@ -43,7 +43,7 @@ def run_dummy_server():
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"DragonSlayerBot v2.8.1 Production-Ready is online!")
+            self.wfile.write(b"DragonSlayerBot v2.8.2 Production-Ready is online!")
 
         def log_message(self, format, *args):
             pass
@@ -1705,7 +1705,7 @@ async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], 
 
 @bot.tree.command(name="set-rank-points", description="Set rank points threshold & sync ranks | تحديد نقاط رتب السلم وتحديث الرتب")
 @app_commands.choices(rank=RANK_CHOICES)
-async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str], points: app_commands.Range[int, 0, 10000]:
+async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str], points: app_commands.Range[int, 0, 100000]):
     if not await check_cmd_perm(i, "set-rank-points") or not is_editor(i.user): return await i.response.send_message("❌ No permission.", ephemeral=True)
     await i.response.defer(ephemeral=True)
     await set_setting(i.guild.id, "rank:" + rank.value, points)
