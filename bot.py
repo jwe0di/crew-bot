@@ -27,7 +27,7 @@ DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "bot_data.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
-BOT_VERSION = "v2.5.2"
+BOT_VERSION = "v2.5.3"
 
 
 # --- سيرفر ويب مصغر لـ Railway ---
@@ -115,11 +115,11 @@ BACKUP_DEST_CHOICES = [
 
 UPDATE_PRESETS = {
     "bot_patch": {
-        "label": "🤖 Bot Patch Update / تحديث جديد للبوت",
+        "label": f"🤖 Bot Patch Update {BOT_VERSION} / تحديث جديد للبوت",
         "title_en": f"DragonSlayerBot Update {BOT_VERSION}",
         "title_ar": f"تحديث نظام البوت {BOT_VERSION}",
-        "desc_en": "• Advanced Backup System with Scope & Destination selection.\n• Full Database & Today's Activity export options.\n• Automatic Bot Manual & Command Guide Integration.\n• Secure Owner DM delivery support.",
-        "desc_ar": "• نظام نسخ احتياطي متطور مع تحديد النطاق والوجهة.\n• تصدير قاعدة البيانات الكاملة أو نشاط اليوم فقط.\n• إرسال الملفات تلقائياً لخاص صاحب البوت (Owner DM).\n• تتبع وتحديثات تلقائية لرقم النسخة."
+        "desc_en": "• Fixed critical security privilege vulnerability in admin checks.\n• Advanced Backup System with Scope & Destination selection.\n• Full Database & Today's Activity export options.\n• Version Control Logging.",
+        "desc_ar": "• تم إصلاح ثغرة أمنية خطيرة في نظام صلاحيات المشرفين.\n• نظام نسخ احتياطي متطور مع تحديد النطاق والوجهة.\n• تصدير قاعدة البيانات الكاملة أو نشاط اليوم فقط.\n• تتبع وتحديثات تلقائية لرقم النسخة."
     },
     "crew_update": {
         "label": "⚔️ Crew Policy & Ranks / تحديث الكرو والرتب",
@@ -412,13 +412,13 @@ def has_role(member, names) -> bool:
     )
 
 
+# تم إصلاح الثغرة هنا بنجاح: الاعتماد على صلاحية الـ Administrator وصاحب البوت فقط
 def is_admin(member) -> bool:
     if not isinstance(member, discord.Member):
         return False
-    if member.guild_permissions.administrator:
+    if owner_id() and member.id == owner_id():
         return True
-    me = member.guild.me
-    return bool(me) and member.top_role > me.top_role
+    return member.guild_permissions.administrator
 
 
 def is_editor(member) -> bool:
@@ -901,7 +901,7 @@ async def start_log(i: discord.Interaction, log_type, result, files: List[Option
 
 def get_help_embeds():
     embed1 = discord.Embed(
-        title="⚔️ DragonSlayerBot — Full Command Manual",
+        title=f"⚔️ DragonSlayerBot — Full Command Manual ({BOT_VERSION})",
         description="Welcome to DragonSlayerBot guide! Select categories below or read the full manual.",
         color=discord.Color.gold()
     )
@@ -917,7 +917,7 @@ def get_help_embeds():
     )
     embed1.add_field(
         name="🎨 2. Updates & Customization",
-        value="• `/log-update`: Publish system updates automatically.\n"
+        value="• `/log-update`: Publish system updates automatically with version notes.\n"
               "• `/set-log-template`: Customize log Embeds for each type.\n"
               "• `/set-update-ping`: Specify role to ping on updates.",
         inline=False
@@ -969,7 +969,7 @@ async def check_and_notify_auto_update(guild: discord.Guild):
             )
             embed.add_field(name="English Patch Notes", value=data["desc_en"], inline=False)
             embed.add_field(name="تفاصيل التحديث بالعربية", value=data["desc_ar"], inline=False)
-            embed.set_footer(text="DragonSlayerBot Auto Update Engine")
+            embed.set_footer(text=f"DragonSlayerBot Auto Update Engine | {BOT_VERSION}")
             try:
                 await ch.send(content=ping_text, embed=embed, allowed_mentions=mentions(ping_role_id))
             except discord.HTTPException:
@@ -1064,7 +1064,7 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
     if not has_sent_manual:
         embeds = get_help_embeds()
         try:
-            await target_ch.send(content=f"{ping_text}📖 **DragonSlayerBot Full System Manual & Setup**", embeds=embeds, allowed_mentions=mentions(ping_role_id))
+            await target_ch.send(content=f"{ping_text}📖 **DragonSlayerBot Full System Manual & Setup ({BOT_VERSION})**", embeds=embeds, allowed_mentions=mentions(ping_role_id))
             await set_setting(f"state:help_manual_sent:{i.guild.id}", 1)
         except discord.HTTPException:
             pass
@@ -1080,13 +1080,12 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
 
     try:
         await target_ch.send(content=ping_text, embed=embed, allowed_mentions=mentions(ping_role_id))
-        await audit(f"📢 {i.user.mention} posted update **{preset.name}** in {target_ch.mention}", i.guild)
-        await i.followup.send(f"✅ Update preset **{preset.name}** published to {target_ch.mention}!", ephemeral=True)
+        await audit(f"📢 {i.user.mention} posted update **{preset.name}** (Ver {BOT_VERSION}) in {target_ch.mention}", i.guild)
+        await i.followup.send(f"✅ Update preset **{preset.name}** (Version {BOT_VERSION}) published to {target_ch.mention}!", ephemeral=True)
     except discord.HTTPException as e:
         await i.followup.send(f"❌ Failed to send update message: {e}", ephemeral=True)
 
 
-# ================================================================ أمر الـ Backup المتقدم الجديد
 def _backup_file(path):
     src = sqlite3.connect(DB)
     dst = sqlite3.connect(path)
@@ -1118,7 +1117,6 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], de
         await asyncio.to_thread(_backup_file, path)
         file_to_send = discord.File(path, filename=filename)
     else:
-        # نشاط اليوم فقط (سجلات ولوجات اليوم)
         today_str = now_utc().strftime("%Y-%m-%d")
         filename = f"crewbot-today-activity-{today_str}.json"
         
@@ -1131,6 +1129,7 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], de
             today_events = [dict(r) for r in await cur.fetchall()]
 
         data = {
+            "version": BOT_VERSION,
             "guild_id": i.guild.id,
             "date": today_str,
             "logs": today_logs,
@@ -1152,7 +1151,7 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], de
             else:
                 await i.followup.send("❌ Failed to send backup to owner's DM (Check OWNER_ID or DMs settings). Sending here instead:", file=file_to_send, ephemeral=True)
         else:
-            await i.followup.send(f"🗄️ **Backup File ({scope.name}):**", file=file_to_send, ephemeral=True)
+            await i.followup.send(f"🗄️ **Backup File ({scope.name}) — Ver {BOT_VERSION}:**", file=file_to_send, ephemeral=True)
     finally:
         try:
             os.unlink(path)
