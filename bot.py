@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.0"
+BOT_VERSION = "v2.9.1"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "bot_config_snapshot.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -53,7 +53,7 @@ def run_dummy_server():
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
-# ================================================================ الإعدادات (config.py اختياري)
+# ================================================================ الإعدادات
 REQUIRED_TYPES = ("war", "1v1", "2v2", "training", "tryout")
 
 _DEFAULT_LOG_TYPES = {
@@ -743,13 +743,7 @@ async def on_app_command_error(i: discord.Interaction, error):
     await report_error(i, error)
 
 
-# ================================================================ شكل اللوج
-DIVIDER = ("<:EU1:1449430079611600936> ●▬▬▬▬▬▬▬▬▬▬▬☭  <:Grok2:1513556052036030584> "
-           "☭▬▬▬▬▬▬▬▬▬▬▬● <:EU1:1449430079611600936>")
-ANGEL = "<:celestial_angel:1455574559062360198>"
-MOON = "<:Whitemoon:1458484853640138784>"
-ARROW = "<:f_arrows:1364977170140893315>"
-CROWN = "<:WhiteCrown:1458484851614416968>"
+# ================================================================ الستايل وقالب اللوج
 MSG_LIMIT = 1900
 
 
@@ -772,74 +766,52 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
     label = LOG_TYPES.get(log_type, {}).get("label", log_type)
     d = lambda k, default="-": clip(data.get(k, default))  # noqa: E731
     participants = dedupe([int(x) for x in data.get("participants", [])]) if isinstance(data.get("participants"), list) else []
-    confirmed = {int(x) for x in data.get("confirmed_participants", [])}
+    
+    values = {
+        "log_id": log_id,
+        "author": f"<@{author_id}>",
+        "score": d("score"),
+        "notes": d("notes"),
+        "youtube_link": data.get("youtube_link", "-"),
+        "my_team": d("my_team"),
+        "their_team": d("their_team"),
+        "crew": d("crew"),
+        "my_fighter": d("my_fighter"),
+        "opponent": d("opponent"),
+        "participants": " ".join(f"<@{p}>" for p in participants) if participants else "-",
+        "candidate": data.get("candidate", "-"),
+        "roblox": d("roblox"),
+        "p1": d("p1"),
+        "p2": d("p2"),
+        "result": TRYOUT_LABEL.get(result, result) if log_type == "tryout" else RESULT_LABEL.get(result, result) if result else "-"
+    }
 
-    header = f"{ANGEL}  **{label}**  {ANGEL}  `Log #{log_id}`\n\n{DIVIDER}\n\n"
-    body = None
+    # احترام القالب المخصص بالكامل إذا وُجد
     if custom_template:
-        values = {
-            "log_id": log_id, "author": f"<@{author_id}>", "score": d("score"), "notes": d("notes"),
-            "youtube_link": data.get("youtube_link", "-"), "my_team": d("my_team"),
-            "their_team": d("their_team"), "crew": d("crew"), "my_fighter": d("my_fighter"),
-            "opponent": d("opponent"), "participants": d("participants") if not participants else
-            " ".join(f"<@{p}>" for p in participants), "candidate": data.get("candidate", "-"),
-            "roblox": d("roblox"), "p1": d("p1"), "p2": d("p2"),
-        }
-        body = header + apply_template(clip(custom_template, 1200), values) + "\n\n" + DIVIDER + "\n"
-
-    if body is None:
-        m = header + f"{MOON} **Logged by:** <@{author_id}>\n"
-        if log_type == "war":
-            m += f"{MOON} **Dragon Slayer's Fighters:**\n{ARROW}  {d('my_team')}\n\n{DIVIDER}\n\n"
-            m += f"{MOON} **{clip(data.get('crew', 'Enemy Crew'), 60)} Fighters:**\n{ARROW}  {d('their_team')}\n\n"
-        elif log_type == "1v1":
-            m += f"{MOON} **Dragon Slayer's Fighter:**\n{ARROW}  {d('my_fighter')}\n\n{DIVIDER}\n\n"
-            m += f"{MOON} **Opponent:**\n{ARROW}  {d('opponent')}\n\n"
-        elif log_type == "2v2":
-            m += f"{MOON} **Dragon Slayer's Team:**\n{ARROW}  {d('my_team')}\n\n{DIVIDER}\n\n"
-            m += f"{MOON} **Enemy Team:**\n{ARROW}  {d('their_team')}\n\n"
-        elif log_type == "training":
-            people = data.get("participants") if not isinstance(data.get("participants"), list) else None
-            if not people and (data.get("p1") or data.get("p2")):
-                people = f"{data.get('p1', '-')} vs {data.get('p2', '-')}"
-            m += f"{MOON} **Training Participants:**\n{ARROW}  {clip(people)}\n\n"
-        elif log_type == "tryout":
-            tester = data.get("tester_id") or author_id
-            m += f"{MOON} **Tested by:** <@{tester}>\n"
-            cand = data.get("candidate", "-")
-            if data.get("roblox"):
-                cand += f" ({clip(data['roblox'], 40)})"
-            m += f"{MOON} **Tryout Candidate:**\n{ARROW}  {cand}\n\n"
-
-        if log_type in ("war", "2v2") and participants:
-            m += f"{MOON} **Tagged Teammates Verification:**\n"
-            for p_id in participants[:8]:
-                m += f"• <@{p_id}> — **{'✅ Confirmed' if p_id in confirmed else '⏳ Unconfirmed'}**\n"
-            m += "\n"
-
-        m += f"{DIVIDER}\n\n"
-        if result:
-            labels = TRYOUT_LABEL if log_type == "tryout" else RESULT_LABEL
-            m += f"      {CROWN} **Result:** {labels.get(result, result)}\n"
-        m += f"      • **Score:** {d('score')}\n"
-        if data.get("notes"):
-            m += f"      • **Notes:** {d('notes')}\n"
-        if data.get("youtube_link"):
-            m += f"      • **YouTube Video:** <{data['youtube_link']}>\n"
+        body = apply_template(custom_template, values)
+    else:
+        header = f"<:emoji_2:1568348048906649652>   **{label}**  <:emoji_2:1568348048906649652>  `Log #{log_id}`\n\n<a:emoji_6:1568348105781416008>   ●▬▬▬▬▬▬▬▬▬▬▬☭   ☭▬▬▬▬▬▬▬▬▬▬▬●   <a:emoji_6:1568348105781416008>\n\n"
+        m = header + f"<a:emoji_15:1568348248522100757>   **Logged by:** <@{author_id}>\n\n"
+        if log_type == "1v1":
+            m += f"<a:emoji_15:1568348248522100757>   **Dragon Slayer's Fighter:**\n<a:emoji_8:1568348117236187237>   {d('my_fighter')}\n\n"
+            m += f"<a:emoji_15:1568348248522100757>   **Opponent:**\n<a:emoji_8:1568348117236187237>   {d('opponent')}\n\n"
+        else:
+            m += f"<a:emoji_15:1568348248522100757>   **Details:** {d('score')}\n"
         body = m
 
-    footer = f"\n**Status:** {STATUS_LABEL[status]}"
+    footer = f"\n<:EU1:1449430079611600936>   ●▬▬▬▬▬▬▬▬▬▬▬☭  <:Grok2:1560609774423511060>   ☭▬▬▬▬▬▬▬▬▬▬▬●   <:EU1:1449430079611600936>\n\n**Status:** {STATUS_LABEL[status]}"
     if points is not None:
         footer += f" | **Points:** +{points}"
         if pts_to:
             footer += " → " + " ".join(f"<@{u}>" for u in list(pts_to)[:6])
     if reviewer_id and status != "pending":
         who = {"accepted": "Accepted by", "rejected": "Rejected by", "revoked": "Revoked by"}[status]
-        footer += f"\n{MOON} **{who}:** <@{reviewer_id}>"
+        footer += f"\n<a:emoji_15:1568348248522100757>   **{who}:** <@{reviewer_id}>"
     if reason:
-        footer += f"\n**Reason:** {clip(reason, 300)}"
+        footer += f"\n<:emoji_11:1568348158495432754>   **Reason:** {clip(reason, 300)}"
     if flags:
-        footer += "\n⚠️ **Warnings:**\n" + "\n".join("• " + clip(f, 120) for f in flags[:5])
+        footer += "\n⚠️ **Warnings:**\n" + "\n".join(f"<a:emoji_8:1568348117236187237>   " + clip(f, 120) for f in flags[:5])
+
     if len(body) + len(footer) > MSG_LIMIT:
         body = body[: max(200, MSG_LIMIT - len(footer) - 1)] + "…"
     return (body + footer)[:MSG_LIMIT + 100]
@@ -900,13 +872,6 @@ async def update_member_rank(guild, member, total, allow_demote=False):
         except discord.HTTPException:
             pass
     return target_role
-
-
-async def rank_is_above_points(guild, member, total) -> bool:
-    ladder = await get_ladder(guild.id)
-    roles = ladder_roles(guild)
-    held = [idx for idx, r in enumerate(roles) if r and r in member.roles]
-    return bool(held) and max(held) > target_index(ladder, total)
 
 
 async def bulk_update_ranks(guild: discord.Guild, allow_demote=False):
