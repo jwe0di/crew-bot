@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.1"
+BOT_VERSION = "v2.9.2"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "bot_config_snapshot.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -186,7 +186,7 @@ ALL_BOT_COMMANDS = [
     "log-war", "log-1v1", "log-2v2", "log-training", "log-tryout", "resubmit",
     "log-update", "set-log-template", "points", "leaderboard", "profile",
     "stats", "rates", "link", "pending", "revoke-log", "inactive",
-    "season-reset", "season-top", "backup", "setchannel", "setping",
+    "season-reset", "season-top", "backup", "restore-backup", "setchannel", "setping",
     "setroles", "setrule", "set-log-points", "set-rank-points", "set-points",
     "sync-ranks", "verify-points", "settings", "sync", "set-cmd-role", "set-update-ping",
     "help", "send-help-panel",
@@ -786,7 +786,6 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
         "result": TRYOUT_LABEL.get(result, result) if log_type == "tryout" else RESULT_LABEL.get(result, result) if result else "-"
     }
 
-    # احترام القالب المخصص بالكامل إذا وُجد
     if custom_template:
         body = apply_template(custom_template, values)
     else:
@@ -1708,7 +1707,83 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
 async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], destination: app_commands.Choice[str]):
     if not await gate(i, "backup", editor=True):
         return
-    await i.response.send_message("Backup created.", ephemeral=True)
+    await i.response.defer(ephemeral=True)
+    if scope.value == "full" and i.user.id != owner_id():
+        return await i.followup.send("❌ Full backup is reserved for the bot owner.", ephemeral=True)
+    
+    if scope.value == "full":
+        file = discord.File(DB, filename=f"full_backup_{i.guild.id}.db")
+        msg = "📦 Full Database Backup."
+    else:
+        file = discord.File(JSON_CONFIG_PATH, filename=f"config_backup_{i.guild.id}.json")
+        msg = "📦 Server Config JSON Backup."
+
+    if destination.value == "owner":
+        ok = await dm_owner(msg, file=file)
+        if ok:
+            await i.followup.send("✅ Backup sent to owner DMs.", ephemeral=True)
+        else:
+            await i.followup.send("❌ Could not DM owner.", ephemeral=True)
+    else:
+        await i.followup.send(content=msg, file=file, ephemeral=True)
+
+
+@bot.tree.command(name="restore-backup", description="Read and restore backup file (.json or .db)")
+@app_commands.describe(backup_file="Attach the backup JSON or DB file")
+async def restore_backup(i: discord.Interaction, backup_file: discord.Attachment):
+    if not await gate(i, "restore-backup", editor=True):
+        return
+    await i.response.defer(ephemeral=True)
+    
+    ext = os.path.splitext(backup_file.filename)[1].lower()
+    if ext not in (".json", ".db"):
+        return await i.followup.send("❌ Invalid backup file format. Only `.json` or `.db` files are accepted.", ephemeral=True)
+
+    file_bytes = await backup_file.read()
+    
+    if ext == ".json":
+        try:
+            data = json.loads(file_bytes.decode("utf-8"))
+            version = data.get("version", "Unknown")
+            updated = data.get("updated_at", "Unknown")
+            guild_cfg = len(data.get("guild_cfg", []))
+            role_perms = len(data.get("role_perms", []))
+            cmd_roles = len(data.get("cmd_roles", []))
+            settings = len(data.get("settings", []))
+
+            # كتابة الإعدادات من ملف الـ JSON لداخل قاعدة البيانات
+            async with aiosqlite.connect(DB) as db:
+                for row in data.get("settings", []):
+                    await db.execute("INSERT OR REPLACE INTO settings VALUES(?,?,?)", (row["guild_id"], row["key"], str(row["value"])))
+                for row in data.get("guild_cfg", []):
+                    await db.execute("INSERT OR REPLACE INTO guild_cfg VALUES(?,?,?,?)", (row["guild_id"], row["log_type"], row["key"], row["value"]))
+                for row in data.get("role_perms", []):
+                    await db.execute("INSERT OR REPLACE INTO role_perms VALUES(?,?,?,?)", (row["guild_id"], row["log_type"], row["kind"], row["role_id"]))
+                for row in data.get("cmd_roles", []):
+                    await db.execute("INSERT OR REPLACE INTO cmd_roles VALUES(?,?,?)", (row["guild_id"], row["cmd_name"], row["role_id"]))
+                await db.commit()
+
+            msg = (f"✅ **JSON Backup Restored Successfully!**\n"
+                   f"• **Version:** `{version}`\n"
+                   f"• **Updated At:** `{updated}`\n"
+                   f"• **Restored Settings:** `{settings}` entries\n"
+                   f"• **Restored Channels/Pings:** `{guild_cfg}` entries\n"
+                   f"• **Restored Role Perms:** `{role_perms}` entries\n"
+                   f"• **Restored Command Roles:** `{cmd_roles}` entries")
+            await i.followup.send(msg, ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Failed to parse/restore JSON backup: {e}", ephemeral=True)
+
+    elif ext == ".db":
+        if i.user.id != owner_id():
+            return await i.followup.send("❌ Restoring raw `.db` database backups is restricted to the Bot Owner.", ephemeral=True)
+        try:
+            with open(DB, "wb") as f:
+                f.write(file_bytes)
+            await init_db()
+            await i.followup.send("✅ **Full Database (.db) Restored and Initialized Successfully!**", ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Failed to restore SQLite database file: {e}", ephemeral=True)
 
 
 async def run_reminders():
