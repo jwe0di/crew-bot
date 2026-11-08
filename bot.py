@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import datetime as dt
 import hashlib
 import io
@@ -32,12 +33,16 @@ if os.getenv("RAILWAY_ENVIRONMENT") and not os.getenv("DB_PATH"):
 DB = os.path.abspath(os.getenv("DB_PATH", str(_default_data_dir / "dragonslayerbot.sqlite3")))
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
+@asynccontextmanager
 async def db_connect():
-    """Open a consistently configured SQLite connection."""
+    """Yield a configured SQLite connection and always close it."""
     db = await aiosqlite.connect(DB, timeout=30)
-    await db.execute("PRAGMA foreign_keys=ON")
-    await db.execute("PRAGMA busy_timeout=30000")
-    return db
+    try:
+        await db.execute("PRAGMA foreign_keys=ON")
+        await db.execute("PRAGMA busy_timeout=30000")
+        yield db
+    finally:
+        await db.close()
 
 
 # --- سيرفر ويب مصغر لـ Railway ---
