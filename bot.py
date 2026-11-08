@@ -25,9 +25,9 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.2"
+BOT_VERSION = "v2.9.3"
 DB = os.getenv("DB_PATH", "crewbot.db")
-JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "bot_config_snapshot.json")
+JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
 # ---- حدود المرفقات ----
@@ -301,6 +301,39 @@ def owner_id():
         return 0
 
 
+# ================================================================ الاستعادة التلقائية من ملف servers_settings.json
+async def auto_restore_from_json():
+    """قراءة واستعادة الإعدادات تلقائياً من ملف JSON عند بدء تشغيل البوت"""
+    if not os.path.exists(JSON_CONFIG_PATH):
+        return
+    try:
+        def read_json():
+            with open(JSON_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        
+        data = await asyncio.to_thread(read_json)
+        if not isinstance(data, dict):
+            return
+
+        async with aiosqlite.connect(DB) as db:
+            for row in data.get("settings", []):
+                await db.execute("INSERT OR REPLACE INTO settings VALUES(?,?,?)", 
+                                 (row.get("guild_id", 0), row.get("key"), str(row.get("value"))))
+            for row in data.get("guild_cfg", []):
+                await db.execute("INSERT OR REPLACE INTO guild_cfg VALUES(?,?,?,?)", 
+                                 (row.get("guild_id", 0), row.get("log_type"), row.get("key"), row.get("value")))
+            for row in data.get("role_perms", []):
+                await db.execute("INSERT OR REPLACE INTO role_perms VALUES(?,?,?,?)", 
+                                 (row.get("guild_id", 0), row.get("log_type"), row.get("kind"), row.get("role_id")))
+            for row in data.get("cmd_roles", []):
+                await db.execute("INSERT OR REPLACE INTO cmd_roles VALUES(?,?,?)", 
+                                 (row.get("guild_id", 0), row.get("cmd_name"), row.get("role_id")))
+            await db.commit()
+        print("✅ [Auto-Restore] Server settings loaded successfully from JSON snapshot file.")
+    except Exception as e:
+        print(f"⚠️ [Auto-Restore Error] Could not load JSON config snapshot: {e}")
+
+
 # ================================================================ قاعدة البيانات
 async def table_columns(db, table):
     cur = await db.execute(f"PRAGMA table_info({table})")
@@ -359,6 +392,9 @@ async def init_db():
 
         await db.executescript(INDEXES)
         await db.commit()
+    
+    # استعادة الإعدادات تلقائياً من ملف servers_settings.json عند التشغيل
+    await auto_restore_from_json()
     await save_config_snapshot_json()
 
 
@@ -1715,7 +1751,7 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], de
         file = discord.File(DB, filename=f"full_backup_{i.guild.id}.db")
         msg = "📦 Full Database Backup."
     else:
-        file = discord.File(JSON_CONFIG_PATH, filename=f"config_backup_{i.guild.id}.json")
+        file = discord.File(JSON_CONFIG_PATH, filename=f"servers_settings.json")
         msg = "📦 Server Config JSON Backup."
 
     if destination.value == "owner":
@@ -1751,7 +1787,6 @@ async def restore_backup(i: discord.Interaction, backup_file: discord.Attachment
             cmd_roles = len(data.get("cmd_roles", []))
             settings = len(data.get("settings", []))
 
-            # كتابة الإعدادات من ملف الـ JSON لداخل قاعدة البيانات
             async with aiosqlite.connect(DB) as db:
                 for row in data.get("settings", []):
                     await db.execute("INSERT OR REPLACE INTO settings VALUES(?,?,?)", (row["guild_id"], row["key"], str(row["value"])))
