@@ -23,6 +23,17 @@ from dotenv import load_dotenv
 
 import config
 
+# Fail early with a clear message if config.py is missing required settings.
+_REQUIRED_CONFIG = (
+    "DEFAULT_POINTS", "EDITOR_ROLES", "LADDER", "LOG_TYPES",
+    "MAX_VIDEO_AGE_DAYS", "POINT_LABELS", "REVIEWER_ROLES", "TRYOUTER_ROLES",
+)
+_missing_config = [name for name in _REQUIRED_CONFIG if not hasattr(config, name)]
+if _missing_config:
+    raise RuntimeError(
+        "config.py is missing required variables: " + ", ".join(_missing_config)
+    )
+
 load_dotenv()
 
 # مسار الداتابيز. على Railway حط Volume واكتب DB_PATH=/data/crewbot.db في Variables
@@ -232,6 +243,37 @@ class CrewBot(discord.Client):
 
 
 bot = CrewBot()
+
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+):
+    """Centralized, user-friendly handling for slash-command errors."""
+    original = getattr(error, "original", error)
+
+    if isinstance(error, app_commands.CommandOnCooldown):
+        message = f"الأمر عليه انتظار. جرّب تاني بعد {error.retry_after:.1f} ثانية."
+    elif isinstance(error, app_commands.MissingPermissions):
+        message = "معندكش الصلاحيات المطلوبة لاستخدام الأمر."
+    elif isinstance(error, app_commands.CheckFailure):
+        message = "مش مسموح لك تستخدم الأمر ده في السياق الحالي."
+    elif isinstance(error, app_commands.TransformerError):
+        message = "فيه قيمة مدخلة غير صحيحة. راجع الاختيارات وحاول تاني."
+    elif isinstance(original, discord.Forbidden):
+        message = "البوت مش معاه الصلاحيات الكافية لتنفيذ الطلب."
+    else:
+        message = "حصل خطأ غير متوقع أثناء تنفيذ الأمر. جرّب تاني، ولو اتكرر بلّغ إدارة السيرفر."
+        print(f"[APP COMMAND ERROR] {type(original).__name__}: {original!r}")
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException as send_error:
+        print(f"[APP COMMAND ERROR] Could not send error response: {send_error!r}")
 
 
 # ================================================================ DB helpers
@@ -562,26 +604,55 @@ def ladder_roles(guild):
 
 # ================================================================ فحص الملفات
 async def video_age_days(data: bytes) -> Optional[int]:
+    """Return video age in days, or None when metadata cannot be read.
+
+    ffprobe is optional: missing binaries, malformed metadata, and timeouts
+    must never stop log submission.
+    """
     path = None
+    proc = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             f.write(data)
             path = f.name
+
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "quiet", "-print_format", "json",
             "-show_entries", "format_tags=creation_time", path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await proc.communicate()
-        created = json.loads(out or b"{}").get("format", {}).get("tags", {}).get("creation_time")
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode != 0:
+            return None
+
+        metadata = json.loads(out or b"{}")
+        created = metadata.get("format", {}).get("tags", {}).get("creation_time")
         if not created:
             return None
-        created = dt.datetime.fromisoformat(created.replace("Z", "+00:00"))
-        return (now_utc() - created).days
-    except (FileNotFoundError, ValueError):
+
+        created_at = dt.datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return max(0, (now_utc() - created_at).days)
+
+    except asyncio.TimeoutError:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+        return None
+    except (FileNotFoundError, PermissionError, OSError, ValueError, TypeError):
+        # ffprobe is not installed or the file has no usable metadata.
         return None
     finally:
         if path and os.path.exists(path):
-            os.unlink(path)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 async def inspect_blobs(blobs, guild_id):
