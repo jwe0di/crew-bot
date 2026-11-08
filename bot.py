@@ -246,7 +246,43 @@ def now_ts():
 async def init_db():
     async with db_connect() as db:
         await db.execute("PRAGMA journal_mode=WAL")
+
+        # Older deployments may have a three-column `settings` table.
+        # CREATE TABLE IF NOT EXISTS does not change an existing table, so
+        # preserve the old table and recreate the two-column schema expected
+        # by this version of the bot.
+        cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
+        settings_exists = await cur.fetchone()
+        legacy_settings_table = None
+        if settings_exists:
+            cur = await db.execute("PRAGMA table_info(settings)")
+            settings_columns = [row[1] for row in await cur.fetchall()]
+            if settings_columns != ["key", "value"]:
+                legacy_settings_table = "settings_legacy_backup"
+                suffix = 1
+                while True:
+                    cur = await db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (legacy_settings_table,),
+                    )
+                    if not await cur.fetchone():
+                        break
+                    suffix += 1
+                    legacy_settings_table = f"settings_legacy_backup_{suffix}"
+                await db.execute(f"ALTER TABLE settings RENAME TO {legacy_settings_table}")
+
         await db.executescript(SCHEMA)
+
+        # Preserve legacy key/value settings when those columns exist.
+        # The full old table remains available as settings_legacy_backup*.
+        if legacy_settings_table:
+            cur = await db.execute(f"PRAGMA table_info({legacy_settings_table})")
+            legacy_columns = [row[1] for row in await cur.fetchall()]
+            if "key" in legacy_columns and "value" in legacy_columns:
+                await db.execute(
+                    f"INSERT OR IGNORE INTO settings(key, value) "
+                    f"SELECT key, value FROM {legacy_settings_table}"
+                )
         for table, col, decl in MIGRATIONS:
             cur = await db.execute(f"PRAGMA table_info({table})")
             if col not in [r[1] for r in await cur.fetchall()]:
@@ -255,9 +291,9 @@ async def init_db():
         if "season_id" not in [r[1] for r in await cur.fetchall()]:
             await db.execute("ALTER TABLE guild_point_events ADD COLUMN season_id INTEGER NOT NULL DEFAULT 1")
         for k, v in config.DEFAULT_POINTS.items():
-            await db.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", ("points:" + k, v))
+            await db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", ("points:" + k, v))
         for name, p in config.LADDER:
-            await db.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", ("rank:" + name, p))
+            await db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", ("rank:" + name, p))
         # One-time tenant migration after legacy columns have been added.
         cur = await db.execute("SELECT 1 FROM schema_migrations WHERE version=1")
         migrated = await cur.fetchone()
