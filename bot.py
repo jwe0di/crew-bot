@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.3"
+BOT_VERSION = "v2.9.4"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -760,10 +760,6 @@ class CrewBot(discord.Client):
                 print(f"⚠️ Legacy data adoption failed: {e}")
             for g in self.guilds:
                 await self.sync_guild(g)
-                try:
-                    await check_and_notify_auto_update(g)
-                except Exception as e:
-                    print(f"⚠️ Update notice failed for {g.id}: {e}")
         if not maintenance.is_running():
             maintenance.start()
 
@@ -1730,12 +1726,39 @@ async def send_help_panel(i: discord.Interaction, channel: Optional[discord.Text
     await i.response.send_message("Sent help panel.", ephemeral=True)
 
 
-@bot.tree.command(name="log-update", description="Log update notice")
+@bot.tree.command(name="log-update", description="Publish a formatted bot update notice")
 @app_commands.choices(preset=UPDATE_TYPE_CHOICES)
+@app_commands.describe(preset="Choose the update preset", channel="Target channel (optional)")
 async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], channel: Optional[discord.TextChannel] = None):
     if not await gate(i, "log-update", editor=True):
         return
-    await i.response.send_message("Update logged.", ephemeral=True)
+
+    target_channel = channel or i.channel
+    update_info = UPDATE_PRESETS.get(preset.value)
+
+    if not update_info:
+        return await i.response.send_message("❌ Presets for this update were not found.", ephemeral=True)
+
+    await i.response.defer(ephemeral=True)
+
+    ping_role_id = await cfg_get(i.guild.id, "all", "update_ping")
+    ping_text = f"<@&{ping_role_id}>\n" if ping_role_id else ""
+
+    embed = discord.Embed(
+        title=f"<a:emoji_20:1568348329971163196> {update_info['title_en']}",
+        color=discord.Color.gold(),
+        timestamp=now_utc()
+    )
+    embed.add_field(name="🌐 English Notes", value=update_info['desc_en'], inline=False)
+    embed.add_field(name="🇪🇬 التحديثات بالعربي", value=update_info['desc_ar'], inline=False)
+    embed.set_footer(text=f"DragonSlayerBot {BOT_VERSION} • Developed by Ziad", icon_url=bot.user.display_avatar.url)
+
+    try:
+        await target_channel.send(content=ping_text, embed=embed, allowed_mentions=mentions(ping_role_id))
+        await i.followup.send(f"✅ Update notice successfully published in {target_channel.mention}!", ephemeral=True)
+        await audit(f"📢 {i.user.mention} published update notice `{preset.name}` in {target_channel.mention}", i.guild)
+    except discord.HTTPException as e:
+        await i.followup.send(f"❌ Failed to publish update notice: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="backup", description="Backup tool")
