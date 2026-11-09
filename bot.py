@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.8"
+BOT_VERSION = "v2.9.9"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -169,13 +169,13 @@ UPDATE_PRESETS = {
         "title_en": f"DragonSlayerBot Release {BOT_VERSION}",
         "title_ar": f"إصدار البوت {BOT_VERSION}",
         "desc_en": ("• Fully functional public commands (rates, link, profile, stats).\n"
+                    "• Auto-purge channel messages on updates.\n"
                     "• Bilingual comprehensive command manual (Arabic & English).\n"
-                    "• Improved Log ID visibility on embeds and review messages.\n"
-                    "• Automatic database migration from older versions."),
+                    "• Improved Log ID visibility on embeds and review messages."),
         "desc_ar": ("• تفعيل كافة الأوامر العامة وتعمل بشكل حقيقي ودقيق.\n"
+                    "• مسح رسائل قناة التحديثات تلقائياً عند كل تحديث جديد.\n"
                     "• دليل أوامر شامل وثنائي اللغة (عربي وإنجليزي).\n"
-                    "• تحسين ظهور أيدي اللوج (Log ID) بوضوح تام.\n"
-                    "• ترحيل تلقائي لقاعدة البيانات بدون فقدان أي بيانات."),
+                    "• تحسين ظهور أيدي اللوج (Log ID) بوضوح تام."),
     }
 }
 UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"][:100], value=k) for k, v in UPDATE_PRESETS.items()]
@@ -1753,11 +1753,40 @@ async def stats(i: discord.Interaction, crew: Optional[str] = None):
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="inactive", description="Inactive members / الأعضاء غير الخاملين")
+@bot.tree.command(name="inactive", description="Inactive members / الأعضاء الخاملين")
+@app_commands.describe(days="Number of days of inactivity / عدد أيام الخمول (افتراضي 30 يوم)")
 async def inactive(i: discord.Interaction, days: int = 30):
     if not await gate(i, "inactive", editor=True):
         return
-    await i.response.send_message("Inactive list generated. / تم إنشاء قائمة الخاملين.", ephemeral=True)
+    await i.response.defer(ephemeral=True)
+    
+    cutoff = now_utc() - timedelta(days=days)
+    guild = i.guild
+    
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute(
+            "SELECT author_id, MAX(created_at) FROM logs WHERE guild_id=? AND status='accepted' GROUP BY author_id",
+            (guild.id,)
+        )
+        last_activity = {row[0]: dt.datetime.fromisoformat(row[1]) for row in cur.fetchall()}
+        
+    inactive_members = []
+    for member in guild.members:
+        if member.bot:
+            continue
+        last_date = last_activity.get(member.id)
+        if not last_date or last_date < cutoff:
+            inactive_members.append((member, last_date))
+            
+    if not inactive_members:
+        return await i.followup.send(f"✅ No inactive members found for the past {days} days. / لا توجد أعضاء خاملين خلال الـ {days} يوم السابقة.", ephemeral=True)
+        
+    lines = [f"💤 **Inactive Members (> {days} days) / الأعضاء الخاملين:**\n"]
+    for member, last_date in inactive_members[:25]:
+        date_str = last_date.strftime('%Y-%m-%d') if last_date else "Never / لم يسجل أبداً"
+        lines.append(f"• {member.mention} — Last Log: `{date_str}`")
+        
+    await i.followup.send("\n".join(lines)[:1990], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.tree.command(name="season-reset", description="Reset season / إعادة ضبط الموسم")
@@ -1878,6 +1907,12 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
 
     await i.response.defer(ephemeral=True)
 
+    # 🧹 مسح جميع الرسائل القديمة في القناة تلقائياً قبل إرسال التحديث الجديد بناءً على طلبك
+    try:
+        await target_channel.purge(limit=100)
+    except Exception as e:
+        print(f"⚠️ Could not purge channel messages: {e}")
+
     ping_role_id = await cfg_get(i.guild.id, "all", "update_ping")
     ping_text = f"<@&{ping_role_id}>\n" if ping_role_id else ""
 
@@ -1892,7 +1927,7 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
 
     try:
         await target_channel.send(content=ping_text, embed=embed, allowed_mentions=mentions(ping_role_id))
-        await i.followup.send(f"✅ Update notice successfully published in {target_channel.mention}!", ephemeral=True)
+        await i.followup.send(f"✅ Update notice successfully published in {target_channel.mention} (and old messages cleared)!", ephemeral=True)
         await audit(f"📢 {i.user.mention} published update notice `{preset.name}` in {target_channel.mention}", i.guild)
     except discord.HTTPException as e:
         await i.followup.send(f"❌ Failed to publish update notice: {e}", ephemeral=True)
