@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.7"
+BOT_VERSION = "v2.9.8"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -53,7 +53,7 @@ def run_dummy_server():
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
-# ================================================================ الإعدادات
+# ================================================================ الإعدادات الأساسية
 REQUIRED_TYPES = ("war", "1v1", "2v2", "training", "tryout")
 
 _DEFAULT_LOG_TYPES = {
@@ -168,14 +168,14 @@ UPDATE_PRESETS = {
         "label": f"🤖 Bot Hardening Patch {BOT_VERSION}",
         "title_en": f"DragonSlayerBot Release {BOT_VERSION}",
         "title_ar": f"إصدار البوت {BOT_VERSION}",
-        "desc_en": ("• Bilingual comprehensive command manual (Arabic & English).\n"
+        "desc_en": ("• Fully functional public commands (rates, link, profile, stats).\n"
+                    "• Bilingual comprehensive command manual (Arabic & English).\n"
                     "• Improved Log ID visibility on embeds and review messages.\n"
-                    "• Automatic database migration from older versions (no data loss).\n"
-                    "• Enhanced command reliability and responsive feedback."),
-        "desc_ar": ("• دليل أوامر شامل وثنائي اللغة (عربي وإنجليزي).\n"
-                    "• تحسين ظهور وإبراز أيدي اللوج (Log ID) بوضوح في الرسائل.\n"
-                    "• ترحيل تلقائي لقاعدة البيانات بدون فقدان أي بيانات.\n"
-                    "• تحسين سرعة واستجابة كافة الأوامر واللوجات."),
+                    "• Automatic database migration from older versions."),
+        "desc_ar": ("• تفعيل كافة الأوامر العامة وتعمل بشكل حقيقي ودقيق.\n"
+                    "• دليل أوامر شامل وثنائي اللغة (عربي وإنجليزي).\n"
+                    "• تحسين ظهور أيدي اللوج (Log ID) بوضوح تام.\n"
+                    "• ترحيل تلقائي لقاعدة البيانات بدون فقدان أي بيانات."),
     }
 }
 UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"][:100], value=k) for k, v in UPDATE_PRESETS.items()]
@@ -299,7 +299,7 @@ def owner_id():
         return 0
 
 
-# ================================================================ الاستعادة التلقائية من ملف servers_settings.json
+# ================================================================ استعادة الإعدادات التلقائية
 async def auto_restore_from_json():
     if not os.path.exists(JSON_CONFIG_PATH):
         return
@@ -718,7 +718,7 @@ async def report_error(i: discord.Interaction, error):
         pass
 
 
-# ================================================================ البوت
+# ================================================================ إعداد البوت
 class CrewBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -771,7 +771,7 @@ async def on_app_command_error(i: discord.Interaction, error):
     await report_error(i, error)
 
 
-# ================================================================ الستايل وقالب اللوج
+# ================================================================ القوالب والرسوم (Rendering)
 MSG_LIMIT = 1900
 
 
@@ -844,7 +844,7 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
     return (body + footer)[:MSG_LIMIT + 100]
 
 
-# ================================================================ الرتب
+# ================================================================ الرتب (Ranks)
 def target_index(ladder, total):
     target = -1
     for idx, (_, pts) in enumerate(ladder):
@@ -919,7 +919,7 @@ async def bulk_update_ranks(guild: discord.Guild, allow_demote=False):
     return changed
 
 
-# ================================================================ المراجعة
+# ================================================================ المراجعة (Reviews)
 async def resolve_log(i: discord.Interaction, need_pending=True):
     if not i.guild or not isinstance(i.user, discord.Member):
         await i.response.send_message("Use this inside the server. / استخدم الأمر داخل السيرفر.", ephemeral=True)
@@ -1144,7 +1144,7 @@ class ReviewView(discord.ui.View):
             pass
 
 
-# ================================================================ إنشاء اللوج
+# ================================================================ إنشاء اللوج (Log Submissions)
 class LogModal(discord.ui.Modal):
     def __init__(self, log_type, result, files, extra, defaults=None, parent_id=None):
         super().__init__(title=LOG_TYPES[log_type]["label"][:45])
@@ -1208,7 +1208,7 @@ class LogModal(discord.ui.Modal):
                         "AND status IN ('pending','accepted')", (i.guild.id, i.user.id, since))
                     if (await cur.fetchone())[0] >= limit:
                         await db.rollback()
-                        return await i.followup.send(f"❌ Daily limit reached ({limit} logs/24h).", ephemeral=True)
+                        return await i.followup.send(f"❌ Daily limit reached ({limit} logs/24h). / تم الوصول للحد اليومي.", ephemeral=True)
                 cur = await db.execute(
                     "INSERT INTO logs(guild_id, type, author_id, result, data, flags, created_at, season_id, parent_id) "
                     "VALUES(?,?,?,?,?,?,?,?,?)",
@@ -1612,7 +1612,28 @@ async def set_points(i: discord.Interaction, member: discord.Member, points: app
 async def verify_points(i: discord.Interaction, fix: bool = False):
     if not await gate(i, "verify-points", editor=True):
         return
-    await i.response.send_message("✅ Verified.", ephemeral=True)
+    await i.response.defer(ephemeral=True)
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT user_id, points FROM members WHERE guild_id=?", (i.guild.id,))
+        members_data = await cur.fetchall()
+        
+        mismatches = 0
+        for uid, stored_pts in members_data:
+            cur2 = await db.execute("SELECT SUM(points) FROM point_events WHERE guild_id=? AND user_id=? AND season_id='main'", (i.guild.id, uid))
+            ev_sum = (await cur2.fetchone())[0] or 0
+            if stored_pts != ev_sum:
+                mismatches += 1
+                if fix:
+                    await db.execute("UPDATE members SET points=? WHERE guild_id=? AND user_id=?", (ev_sum, i.guild.id, uid))
+        if fix and mismatches > 0:
+            await db.commit()
+
+    msg = f"✅ Point verification complete. Mismatches found: `{mismatches}`."
+    if fix and mismatches > 0:
+        msg += " All discrepancies have been fixed automatically!"
+    elif mismatches > 0:
+        msg += " Run with `fix: True` to correct them."
+    await i.followup.send(msg, ephemeral=True)
 
 
 @bot.tree.command(name="sync-ranks", description="Sync ranks / مزامنة الرتب")
@@ -1653,14 +1674,25 @@ async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choi
 async def rates(i: discord.Interaction):
     if not await gate(i, "rates"):
         return
-    await i.response.send_message("Rates info. / معلومات النقاط والأسعار.", ephemeral=True)
+    embed = discord.Embed(title="💰 Point Reward Rates / أسعار ونقاط اللوجات", color=discord.Color.gold())
+    for k, v in POINT_LABELS.items():
+        pts = await get_setting(i.guild.id, "points:" + k)
+        embed.add_field(name=v, value=f"`+{pts} points`", inline=True)
+    await i.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="link", description="Link Roblox / ربط حساب روبلوكس")
 async def link(i: discord.Interaction, roblox_username: str):
     if not await gate(i, "link"):
         return
-    await i.response.send_message("Linked successfully. / تم الربط بنجاح.", ephemeral=True)
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT INTO links(guild_id, user_id, roblox_name) VALUES(?,?,?) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET roblox_name=excluded.roblox_name",
+            (i.guild.id, i.user.id, roblox_username.strip())
+        )
+        await db.commit()
+    await i.response.send_message(f"✅ Successfully linked Roblox account **{roblox_username.strip()}**! / تم ربط حساب روبلوكس بنجاح.", ephemeral=True)
 
 
 @bot.tree.command(name="profile", description="Member profile / بروفايل العضو")
@@ -1668,14 +1700,57 @@ async def profile(i: discord.Interaction, member: Optional[discord.Member] = Non
     if not await gate(i, "profile"):
         return
     member = member or i.user
-    await i.response.send_message(f"Profile for {member.display_name}", ephemeral=True)
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, member.id))
+        row = await cur.fetchone()
+        total_pts = row[0] if row else 0
+
+        cur2 = await db.execute("SELECT roblox_name FROM links WHERE guild_id=? AND user_id=?", (i.guild.id, member.id))
+        link_row = await cur2.fetchone()
+        roblox_name = link_row[0] if link_row else "Not linked / غير مرتبط"
+
+        cur_logs = await db.execute("SELECT COUNT(*) FROM logs WHERE guild_id=? AND author_id=? AND status='accepted'", (i.guild.id, member.id))
+        logs_count = (await cur_logs.fetchone())[0]
+
+    ladder = await get_ladder(i.guild.id)
+    roles = ladder_roles(i.guild)
+    target = target_index(ladder, total_pts)
+    rank_name = ladder[target][0] if target >= 0 and target < len(ladder) else "Unranked / بدون رتبة"
+
+    embed = discord.Embed(title=f"👤 Profile: {member.display_name}", color=member.color)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="💎 Total Points / النقاط", value=str(total_pts), inline=True)
+    embed.add_field(name="🎖️ Current Rank / الرتبة", value=rank_name, inline=True)
+    embed.add_field(name="📊 Accepted Logs / اللوجات المقبولة", value=str(logs_count), inline=True)
+    embed.add_field(name="🤖 Roblox Account / حساب روبلوكس", value=roblox_name, inline=False)
+    
+    await i.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="stats", description="War stats / إحصائيات الحروب")
 async def stats(i: discord.Interaction, crew: Optional[str] = None):
     if not await gate(i, "stats"):
         return
-    await i.response.send_message("Stats info. / إحصائيات.", ephemeral=True)
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute(
+            "SELECT result, COUNT(*) FROM logs WHERE guild_id=? AND type='war' AND status='accepted' GROUP BY result",
+            (i.guild.id,)
+        )
+        rows = await cur.fetchall()
+    
+    stats_map = {r[0]: r[1] for r in rows}
+    wins = stats_map.get("win", 0)
+    losses = stats_map.get("loss", 0)
+    total_wars = wins + losses
+    ratio = f"{(wins / total_wars * 100):.1f}%" if total_wars > 0 else "0.0%"
+
+    embed = discord.Embed(title="📊 Crew War Statistics / إحصائيات حروب الكرو", color=discord.Color.blue())
+    embed.add_field(name="🏆 Wins / انتصارات", value=str(wins), inline=True)
+    embed.add_field(name="❌ Losses / هزائم", value=str(losses), inline=True)
+    embed.add_field(name="📈 Win Rate / نسبة الفوز", value=ratio, inline=True)
+    embed.set_footer(text=f"Total Wars Logged: {total_wars}")
+    
+    await i.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="inactive", description="Inactive members / الأعضاء غير الخاملين")
@@ -1701,249 +1776,70 @@ async def season_top(i: discord.Interaction, name: str):
     await i.response.send_message("Season archive top.", ephemeral=True)
 
 
-# ================================================================ دليل المساعدة الثنائي والشامل (Bilingual Help Manual)
+# ================================================================ دليل المساعدة الثنائي (Bilingual Help Manual)
 def get_help_embeds():
-    # القسم الأول: أوامر تسجيل اللوجات
     e1 = discord.Embed(
-        title="⚔️ DragonSlayerBot Manual (v2.9.7) — Part 1: Log Submissions",
+        title=f"⚔️ DragonSlayerBot Manual ({BOT_VERSION}) — Part 1: Log Submissions",
         description="**Permission / الصلاحية:** All Members / Submitter Roles\n"
                     "●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.gold()
     )
-    e1.add_field(
-        name="🎮 `/log-war`",
-        value="🇬🇧 Log a Crew War battle (Requires at least 2 file attachments).\n"
-              "🇪🇬 تسجيل حرب كرو (يتطلب إرفاق ملفين إثبات على الأقل).",
-        inline=False
-    )
-    e1.add_field(
-        name="⚔️ `/log-1v1`",
-        value="🇬🇧 Log a 1v1 duel against an opponent.\n"
-              "🇪🇬 تسجيل قتال فردي 1 ضد 1 مع خصم.",
-        inline=False
-    )
-    e1.add_field(
-        name="👥 `/log-2v2`",
-        value="🇬🇧 Log a 2v2 team fight with a teammate.\n"
-              "🇪🇬 تسجيل قتال ثنائي 2 ضد 2 مع زميل.",
-        inline=False
-    )
-    e1.add_field(
-        name="🎯 `/log-training`",
-        value="🇬🇧 Log a crew training session.\n"
-              "🇪🇬 تسجيل جلسة تدريبية للكرو.",
-        inline=False
-    )
-    e1.add_field(
-        name="📝 `/log-tryout`",
-        value="🇬🇧 Log a candidate tryout test.\n"
-              "🇪🇬 تسجيل اختبار قبول (Tryout) لعضو جديد.",
-        inline=False
-    )
-    e1.add_field(
-        name="🔄 `/resubmit` `[log_id]`",
-        value="🇬🇧 Resubmit a previously rejected log using its ID number.\n"
-              "🇪🇬 إعادة تقديم لوج مرفوض باستخدام رقم الـ ID.",
-        inline=False
-    )
+    e1.add_field(name="🎮 `/log-war`", value="🇬🇧 Log a Crew War battle (min 2 attachments).\n🇪🇬 تسجيل حرب كرو (يتطلب إرفاق ملفين على الأقل).", inline=False)
+    e1.add_field(name="⚔️ `/log-1v1`", value="🇬🇧 Log a 1v1 duel against an opponent.\n🇪🇬 تسجيل قتال فردي 1 ضد 1.", inline=False)
+    e1.add_field(name="👥 `/log-2v2`", value="🇬🇧 Log a 2v2 team fight with a teammate.\n🇪🇬 تسجيل قتال ثنائي 2 ضد 2.", inline=False)
+    e1.add_field(name="🎯 `/log-training`", value="🇬🇧 Log a crew training session.\n🇪🇬 تسجيل تدريب للكرو.", inline=False)
+    e1.add_field(name="📝 `/log-tryout`", value="🇬🇧 Log a candidate tryout test.\n🇪🇬 تسجيل اختبار قبول (Tryout).", inline=False)
+    e1.add_field(name="🔄 `/resubmit` `[log_id]`", value="🇬🇧 Resubmit a rejected log using its ID.\n🇪🇬 إعادة تقديم لوج مرفوض باستخدام رقم الـ ID.", inline=False)
 
-    # القسم الثاني: المراجعة والإدارة
     e2 = discord.Embed(
         title="🛡️ DragonSlayerBot Manual — Part 2: Review & Management",
         description="**Permission / الصلاحية:** Reviewers & Editors Only\n"
                     "●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.blue()
     )
-    e2.add_field(
-        name="⏳ `/pending`",
-        value="🇬🇧 List all pending logs awaiting review.\n"
-              "🇪🇬 عرض كافة اللوجات المعلقة بانتظار المراجعة والقبول.",
-        inline=False
-    )
-    e2.add_field(
-        name="🚫 `/revoke-log` `[log_id]` `[reason]`",
-        value="🇬🇧 Revoke an accepted log and deduct points using Log ID.\n"
-              "🇪🇬 إلغاء لوج تم قبوله سابقاً وسحب نقاطه باستخدام رقم اللوج.",
-        inline=False
-    )
-    e2.add_field(
-        name="📢 `/log-update` `[preset]` `(channel)`",
-        value="🇬🇧 Publish formatted bot update notices.\n"
-              "🇪🇬 نشر إعلانات وتحديثات البوت بتصميم منسق وأنيق.",
-        inline=False
-    )
-    e2.add_field(
-        name="📊 `/inactive` `(days)`",
-        value="🇬🇧 Track inactive members based on activity history.\n"
-              "🇪🇬 تتبع الأعضاء غير الخاملين بناءً على سجل اللوجات.",
-        inline=False
-    )
-    e2.add_field(
-        name="🏆 `/season-reset` `[name]` `[RESET]`",
-        value="🇬🇧 Reset the current season and archive stats.\n"
-              "🇪🇬 إعادة تصفير الموسم الحالي وأرشفة الإحصائيات.",
-        inline=False
-    )
-    e2.add_field(
-        name="📦 `/backup` `[scope]` `[destination]`",
-        value="🇬🇧 Generate database or settings JSON backups.\n"
-              "🇪🇬 إنتاج نسخة احتياطية لقاعدة البيانات أو إعدادات السيرفر.",
-        inline=False
-    )
-    e2.add_field(
-        name="📥 `/restore-backup` `[backup_file]`",
-        value="🇬🇧 Restore configuration or full database from backup file.\n"
-              "🇪🇬 استعادة الإعدادات أو قاعدة البيانات من ملف النسخة الاحتياطية.",
-        inline=False
-    )
+    e2.add_field(name="⏳ `/pending`", value="🇬🇧 List all pending logs awaiting review.\n🇪🇬 عرض كافة اللوجات المعلقة بانتظار المراجعة.", inline=False)
+    e2.add_field(name="🚫 `/revoke-log` `[log_id]` `[reason]`", value="🇬🇧 Revoke an accepted log and deduct points.\n🇪🇬 إلغاء لوج تم قبوله سابقاً وسحب نقاطه.", inline=False)
+    e2.add_field(name="📢 `/log-update` `[preset]` `(channel)`", value="🇬🇧 Publish formatted bot update notices.\n🇪🇬 نشر إعلانات وتحديثات البوت بتصميم منسق.", inline=False)
+    e2.add_field(name="📊 `/inactive` `(days)`", value="🇬🇧 Track inactive members based on log history.\n🇪🇬 تتبع الأعضاء الخاملين بناءً على سجل اللوجات.", inline=False)
+    e2.add_field(name="🏆 `/season-reset` `[name]` `[RESET]`", value="🇬🇧 Reset the current season and archive stats.\n🇪🇬 إعادة تصفير الموسم الحالي وأرشفة الإحصائيات.", inline=False)
+    e2.add_field(name="📦 `/backup` `[scope]` `[destination]`", value="🇬🇧 Generate database or settings JSON backups.\n🇪🇬 إنتاج نسخة احتياطية للقاعدة أو الإعدادات.", inline=False)
+    e2.add_field(name="📥 `/restore-backup` `[backup_file]`", value="🇬🇧 Restore configuration or full database from file.\n🇪🇬 استعادة الإعدادات أو قاعدة البيانات من ملف.", inline=False)
 
-    # القسم الثالث: إعدادات السيرفر
     e3 = discord.Embed(
         title="⚙️ DragonSlayerBot Manual — Part 3: Server Configuration",
         description="**Permission / الصلاحية:** Admins & Editors Only\n"
                     "●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.green()
     )
-    e3.add_field(
-        name="📍 `/setchannel` `[log_type]` `[kind]` `(channel)`",
-        value="🇬🇧 Set channels for reviews, public logs, or audit logs.\n"
-              "🇪🇬 تعيين قنوات المراجعة، اللوجات العامة، وسجل التعديلات.",
-        inline=False
-    )
-    e3.add_field(
-        name="🔔 `/setping` `[log_type]` `[kind]` `(role)`",
-        value="🇬🇧 Set notification ping roles for reviews and logs.\n"
-              "🇪🇬 تعيين رتب المنشن للإشعارات واللوجات.",
-        inline=False
-    )
-    e3.add_field(
-        name="🔑 `/setroles` `[kind]` `[log_type]` `[action]` `[role]`",
-        value="🇬🇧 Assign or remove reviewer and submitter role permissions.\n"
-              "🇪🇬 منح أو سحب صلاحيات رتب المراجعين والمسجلين.",
-        inline=False
-    )
-    e3.add_field(
-        name="📜 `/setrule` `[rule_name]` `[value]`",
-        value="🇬🇧 Configure server bot rules (e.g., daily submission limit).\n"
-              "🇪🇬 ضبط قواعد السيرفر (مثل الحد اليومي للوجات لكل عضو).",
-        inline=False
-    )
-    e3.add_field(
-        name="🎯 `/set-log-points` `[log]` `[points]`",
-        value="🇬🇧 Set point values for wins and losses per log type.\n"
-              "🇪🇬 تحديد نقاط الفوز والخسارة لكل نوع لوج.",
-        inline=False
-    )
-    e3.add_field(
-        name="🥇 `/set-rank-points` `[rank]` `[points]`",
-        value="🇬🇧 Set the required points to achieve each rank level.\n"
-              "🇪🇬 تعيين النقاط المطلوبة للوصول لكل رتبة في الليدربورد.",
-        inline=False
-    )
-    e3.add_field(
-        name="🎨 `/set-log-template` `[log_type]` `(template)`",
-        value="🇬🇧 Customize announcement text layout templates for logs.\n"
-              "🇪🇬 تخصيص شكل وقالب رسائل اللوجات.",
-        inline=False
-    )
-    e3.add_field(
-        name="🔐 `/set-cmd-role` `[command]` `(role)`",
-        value="🇬🇧 Lock specific commands to specific roles.\n"
-              "🇪🇬 تقييد الأوامر وتخصيصها لرتب معينة.",
-        inline=False
-    )
-    e3.add_field(
-        name="📌 `/set-update-ping` `(role)`",
-        value="🇬🇧 Set the mention role for bot update announcements.\n"
-              "🇪🇬 تحديد رتبة المنشن الخاصة بإعلانات تحديثات البوت.",
-        inline=False
-    )
+    e3.add_field(name="📍 `/setchannel` `[log_type]` `[kind]` `(channel)`", value="🇬🇧 Set channels for reviews, public logs, or audit logs.\n🇪🇬 تعيين قنوات المراجعة واللوجات وسجل التعديلات.", inline=False)
+    e3.add_field(name="🔔 `/setping` `[log_type]` `[kind]` `(role)`", value="🇬🇧 Set notification ping roles for reviews and logs.\n🇪🇬 تعيين رتب المنشن للإشعارات واللوجات.", inline=False)
+    e3.add_field(name="🔑 `/setroles` `[kind]` `[log_type]` `[action]` `[role]`", value="🇬🇧 Assign or remove reviewer and submitter role permissions.\n🇪🇬 منح أو سحب صلاحيات رتب المراجعين والمسجلين.", inline=False)
+    e3.add_field(name="📜 `/setrule` `[rule_name]` `[value]`", value="🇬🇧 Configure server bot rules (e.g., daily submission limit).\n🇪🇬 ضبط قواعد السيرفر (مثل الحد اليومي للوجات).", inline=False)
+    e3.add_field(name="🎯 `/set-log-points` `[log]` `[points]`", value="🇬🇧 Set point values for wins and losses per log type.\n🇪🇬 تحديد نقاط الفوز والخسارة لكل نوع لوج.", inline=False)
+    e3.add_field(name="🥇 `/set-rank-points` `[rank]` `[points]`", value="🇬🇧 Set the required points to achieve each rank level.\n🇪🇬 تعيين النقاط المطلوبة للوصول لكل رتبة.", inline=False)
+    e3.add_field(name="🎨 `/set-log-template` `[log_type]` `(template)`", value="🇬🇧 Customize announcement text layout templates for logs.\n🇪🇬 تخصيص شكل وقالب رسائل اللوجات.", inline=False)
+    e3.add_field(name="🔐 `/set-cmd-role` `[command]` `(role)`", value="🇬🇧 Lock specific commands to specific roles.\n🇪🇬 تقييد الأوامر وتخصيصها لرتب معينة.", inline=False)
+    e3.add_field(name="📌 `/set-update-ping` `(role)`", value="🇬🇧 Set the mention role for bot update announcements.\n🇪🇬 تحديد رتبة المنشن الخاصة بإعلانات التحديثات.", inline=False)
 
-    # القسم الرابع: النقاط والرتب والأعضاء
     e4 = discord.Embed(
         title="📊 DragonSlayerBot Manual — Part 4: Points, Ranks & Public",
         description="**Permission / الصلاحية:** All Members / لجميع الأعضاء\n"
                     "●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.purple()
     )
-    e4.add_field(
-        name="💎 `/points` `(member)`",
-        value="🇬🇧 Check total points for yourself or another member.\n"
-              "🇪🇬 عرض النقاط الإجمالية لك أو لأي عضو آخر.",
-        inline=False
-    )
-    e4.add_field(
-        name="🏆 `/leaderboard` `(period)`",
-        value="🇬🇧 View the top members leaderboard rankings.\n"
-              "🇪🇬 عرض قائمة المتصدرين بلوحة الشرف.",
-        inline=False
-    )
-    e4.add_field(
-        name="👤 `/profile` `(member)`",
-        value="🇬🇧 View member stats and activity profile.\n"
-              "🇪🇬 عرض بروفايل وإحصائيات العضو.",
-        inline=False
-    )
-    e4.add_field(
-        name="💰 `/rates`",
-        value="🇬🇧 Display current point reward rates for logs.\n"
-              "🇪🇬 عرض جدول أسعار ونقاط اللوجات الحالية.",
-        inline=False
-    )
-    e4.add_field(
-        name="🔗 `/link` `[roblox_username]`",
-        value="🇬🇧 Link your Roblox username to your Discord profile.\n"
-              "🇪🇬 ربط حساب روبلوكس بحسابك في ديسكورد.",
-        inline=False
-    )
-    e4.add_field(
-        name="📈 `/stats` `(crew)`",
-        value="🇬🇧 View general war and fight statistics.\n"
-              "🇪🇬 عرض إحصائيات الحروبات والقتالات العامة.",
-        inline=False
-    )
-    e4.add_field(
-        name="📚 `/season-top` `[name]`",
-        value="🇬🇧 View leaderboard stats of an archived past season.\n"
-              "🇪🇬 عرض ليدربورد موسم سابق مؤرشف.",
-        inline=False
-    )
-    e4.add_field(
-        name="✏️ `/set-points` `[member]` `[points]`",
-        value="🇬🇧 [Admin] Override and set member points directly.\n"
-              "🇪🇬 [للإدارة] تعديل نقاط عضو بشكل مباشر.",
-        inline=False
-    )
-    e4.add_field(
-        name="🔄 `/sync-ranks` `(member)` `(demote)`",
-        value="🇬🇧 Sync member roles automatically based on their points.\n"
-              "🇪🇬 مزامنة وتحديث رتب الأعضاء تلقائياً حسب نقاطهم الحالية.",
-        inline=False
-    )
-    e4.add_field(
-        name="⚙️ `/settings`",
-        value="🇬🇧 View current server configuration settings.\n"
-              "🇪🇬 عرض إعدادات السيرفر الحالية.",
-        inline=False
-    )
-    e4.add_field(
-        name="🔄 `/sync`",
-        value="🇬🇧 Sync application slash commands with Discord.\n"
-              "🇪🇬 مزامنة أوامر البوت مع ديسكورد.",
-        inline=False
-    )
-    e4.add_field(
-        name="❓ `/help`",
-        value="🇬🇧 Show this comprehensive bilingual command manual.\n"
-              "🇪🇬 عرض دليل الأوامر الشامل والثنائي اللغات.",
-        inline=False
-    )
-    e4.add_field(
-        name="📢 `/send-help-panel` `(channel)`",
-        value="🇬🇧 Send the help manual panel to a specific channel.\n"
-              "🇪🇬 إرسال بانل دليل الأوامر إلى قناة محددة.",
-        inline=False
-    )
+    e4.add_field(name="💎 `/points` `(member)`", value="🇬🇧 Check total points for yourself or another member.\n🇪🇬 عرض النقاط الإجمالية لك أو لأي عضو آخر.", inline=False)
+    e4.add_field(name="🏆 `/leaderboard` `(period)`", value="🇬🇧 View the top members leaderboard rankings.\n🇪🇬 عرض قائمة المتصدرين بلوحة الشرف.", inline=False)
+    e4.add_field(name="👤 `/profile` `(member)`", value="🇬🇧 View member stats and activity profile.\n🇪🇬 عرض بروفايل وإحصائيات العضو.", inline=False)
+    e4.add_field(name="💰 `/rates`", value="🇬🇧 Display current point reward rates for logs.\n🇪🇬 عرض جدول أسعار ونقاط اللوجات الحالية.", inline=False)
+    e4.add_field(name="🔗 `/link` `[roblox_username]`", value="🇬🇧 Link your Roblox username to your Discord profile.\n🇪🇬 ربط حساب روبلوكس بحسابك في ديسكورد.", inline=False)
+    e4.add_field(name="📈 `/stats` `(crew)`", value="🇬🇧 View general war and fight statistics.\n🇪🇬 عرض إحصائيات الحروبات والقتالات العامة.", inline=False)
+    e4.add_field(name="📚 `/season-top` `[name]`", value="🇬🇧 View leaderboard stats of an archived past season.\n🇪🇬 عرض ليدربورد موسم سابق مؤرشف.", inline=False)
+    e4.add_field(name="✏️ `/set-points` `[member]` `[points]`", value="🇬🇧 [Admin] Override and set member points directly.\n🇪🇬 [للإدارة] تعديل نقاط عضو بشكل مباشر.", inline=False)
+    e4.add_field(name="🔄 `/sync-ranks` `(member)` `(demote)`", value="🇬🇧 Sync member roles automatically based on their points.\n🇪🇬 مزامنة وتحديث رتب الأعضاء تلقائياً حسب نقاطهم.", inline=False)
+    e4.add_field(name="⚙️ `/settings`", value="🇬🇧 View current server configuration settings.\n🇪🇬 عرض إعدادات السيرفر الحالية.", inline=False)
+    e4.add_field(name="🔄 `/sync`", value="🇬🇧 Sync application slash commands with Discord.\n🇪🇬 مزامنة أوامر البوت مع ديسكورد.", inline=False)
+    e4.add_field(name="❓ `/help`", value="🇬🇧 Show this comprehensive bilingual command manual.\n🇪🇬 عرض دليل الأوامر الشامل.", inline=False)
+    e4.add_field(name="📢 `/send-help-panel` `(channel)`", value="🇬🇧 Send the help manual panel to a specific channel.\n🇪🇬 إرسال بانل دليل الأوامر إلى قناة محددة.", inline=False)
 
     for emb in (e1, e2, e3, e4):
         emb.set_footer(text=f"DragonSlayerBot {BOT_VERSION} • Developed by Ziad", icon_url=bot.user.display_avatar.url)
