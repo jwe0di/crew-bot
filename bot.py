@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.9"
+BOT_VERSION = "v2.9.10"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -1802,11 +1802,13 @@ async def profile(i: discord.Interaction, member: Optional[discord.Member] = Non
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-async def get_crew_choices(interaction: discord.Interaction):
+# ================= التعديل الأساسي لتصحيح خطأ الـ Autocomplete =================
+async def get_crew_choices(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT crew_name FROM guilds_crews WHERE guild_id=?", (interaction.guild.id,))
         rows = await cur.fetchall()
-    return [app_commands.Choice(name=r[0], value=r[0]) for r in rows][:25]
+    return [app_commands.Choice(name=r[0], value=r[0]) for r in rows if current.lower() in r[0].lower()][:25]
+
 
 @bot.tree.command(name="stats", description="War stats / إحصائيات الحروب والطواقم")
 @app_commands.autocomplete(crew=get_crew_choices)
