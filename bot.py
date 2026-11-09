@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v3.0.0"
+BOT_VERSION = "v3.1.0"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -37,7 +37,7 @@ MAX_TOTAL_FILES_SIZE = 50 * 1024 * 1024
 MAX_FILES_COUNT = 5
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 
-# ================================================================ نظام الترجمات واللغات (Localization)
+# ================================================================ نظام اللغات الشامل 100%
 SUPPORTED_LANGUAGES = {
     "ar": "العربية",
     "en": "English",
@@ -46,76 +46,217 @@ SUPPORTED_LANGUAGES = {
     "hi": "हिन्दी"
 }
 
+# قاموس الترجمة الشامل لكافة أجزاء البوت
 TRANSLATIONS = {
     "en": {
-        "no_perm": "❌ You don't have permission.",
-        "no_role": "❌ Missing required role.",
-        "log_not_found": "Log not found.",
-        "success": "Success!",
-        "accepted": "✅ Accepted",
-        "rejected": "❌ Rejected",
-        "revoked": "🚫 Revoked",
-        "pending": "⏳ Pending",
-        "win": "Win",
-        "loss": "Loss",
-        "passed": "Passed",
-        "failed": "Failed"
+        "no_perm": "❌ You don't have permission to perform this action.",
+        "no_role": "❌ You are missing the required role for this command.",
+        "log_not_found": "❌ Log not found or invalid for this server.",
+        "already_reviewed": "⚠️ This log has already been reviewed or closed.",
+        "lang_updated": "✅ Your preferred language has been updated to **English**!",
+        "lang_desc": "Choose your preferred language from the menu below. Every single response, menu, and help manual from the bot will be displayed in this language for you.",
+        "help_title": "⚔️ DragonSlayerBot Help Manual",
+        "help_part1": "🎮 **Log Submissions:**\n• `/log-war` - Log a Crew War battle (min 2 attachments).\n• `/log-1v1` - Log a 1v1 fight.\n• `/log-2v2` - Log a 2v2 fight.\n• `/log-training` - Log a training session.\n• `/log-tryout` - Log a tryout test.\n• `/resubmit` - Resubmit a rejected log.",
+        "help_part2": "🛡️ **Review & Staff:**\n• `/pending` - View pending logs.\n• `/revoke-log` - Revoke an accepted log.\n• `/inactive` - View inactive members.\n• `/log-update` - Publish update notice.\n• `/backup` - Generate a backup.",
+        "help_part3": "📊 **Public & Stats:**\n• `/points` - View total points.\n• `/leaderboard` - View top members.\n• `/profile` - View your member profile.\n• `/rates` - View point reward rates.\n• `/link` - Link your Roblox account.\n• `/stats` - View crew war statistics.",
+        "status_pending": "⏳ Pending",
+        "status_accepted": "✅ Accepted",
+        "status_rejected": "❌ Rejected",
+        "status_revoked": "🚫 Revoked",
+        "result_win": "Win",
+        "result_loss": "Loss",
+        "result_passed": "Passed",
+        "result_failed": "Failed",
+        "lbl_logged_by": "Logged by",
+        "lbl_fighter": "Fighter",
+        "lbl_opponent": "Opponent",
+        "lbl_details": "Details",
+        "lbl_status": "Status",
+        "lbl_points": "Points",
+        "lbl_reviewed_by": "Reviewed by",
+        "lbl_reason": "Reason",
+        "lbl_warnings": "Warnings",
+        "btn_accept": "Accept",
+        "btn_reject": "Reject",
+        "btn_confirm": "Confirm Participation",
+        "profile_title": "👤 Member Profile",
+        "profile_pts": "Total Points",
+        "profile_rank": "Current Rank",
+        "profile_logs": "Accepted Logs",
+        "profile_roblox": "Roblox Account",
+        "stats_title": "📊 Crew War Statistics",
+        "stats_wins": "Wins",
+        "stats_losses": "Losses",
+        "stats_winrate": "Win Rate",
+        "rates_title": "💰 Point Rates"
     },
     "ar": {
-        "no_perm": "❌ ليس لديك صلاحية.",
-        "no_role": "❌ الرتبة المطلوبة غير متوفرة.",
-        "log_not_found": "اللغ غير موجود.",
-        "success": "تم بنجاح!",
-        "accepted": "✅ مقبول",
-        "rejected": "❌ مرفوض",
-        "revoked": "🚫 ملغي",
-        "pending": "⏳ معلق",
-        "win": "فوز",
-        "loss": "خسارة",
-        "passed": "اجتاز",
-        "failed": "راسب"
+        "no_perm": "❌ ليس لديك الصلاحية المطلوبة لتنفيذ هذا الإجراء.",
+        "no_role": "❌ تفتقر للرتبة المطلوبة لاستخدام هذا الأمر.",
+        "log_not_found": "❌ السجل غير موجود أو غير صالح لهذا السيرفر.",
+        "already_reviewed": "⚠️ تم مراجعة هذا السجل أو إغلاقه مسبقاً.",
+        "lang_updated": "✅ تم تحديث لغتك المفضلة بنجاح إلى **العربية**!",
+        "lang_desc": "اختر لغتك المفضلة من القائمة أدناه. سيتم عرض كافة الردود والواجهات ودليل الأوامر لك بهذه اللغة حصرياً.",
+        "help_title": "⚔️ دليل أوامر DragonSlayerBot",
+        "help_part1": "🎮 **تسجيل اللوجات:**\n• `/log-war` - تسجيل حرب كرو (إرفاق ملفين على الأقل).\n• `/log-1v1` - تسجيل قتال فردي 1 ضد 1.\n• `/log-2v2` - تسجيل قتال ثنائي 2 ضد 2.\n• `/log-training` - تسجيل تدريب للكرو.\n• `/log-tryout` - تسجيل اختبار تجربة أداء.\n• `/resubmit` - إعادة تقديم لوج مرفوض.",
+        "help_part2": "🛡️ **المراجعة والإدارة:**\n• `/pending` - عرض اللوجات المعلقة.\n• `/revoke-log` - إلغاء لوج مقبول.\n• `/inactive` - كشف الأعضاء الخاملين.\n• `/log-update` - نشر إعلان تحديث.\n• `/backup` - إنتاج نسخة احتياطية.",
+        "help_part3": "📊 **الأوامر العامة والإحصائيات:**\n• `/points` - عرض النقاط الإجمالية.\n• `/leaderboard` - لوحة المتصدرين.\n• `/profile` - عرض البروفايل الخاص بك.\n• `/rates` - أسعار ونقاط اللوجات.\n• `/link` - ربط حساب روبلوكس.\n• `/stats` - إحصائيات حروب الكرو.",
+        "status_pending": "⏳ قيد المراجعة",
+        "status_accepted": "✅ مقبول",
+        "status_rejected": "❌ مرفوض",
+        "status_revoked": "🚫 ملغي",
+        "result_win": "فوز",
+        "result_loss": "خسارة",
+        "result_passed": "اجتاز",
+        "result_failed": "راسب",
+        "lbl_logged_by": "مسجّل بواسطة",
+        "lbl_fighter": "مقاتلنا",
+        "lbl_opponent": "الخصم",
+        "lbl_details": "التفاصيل",
+        "lbl_status": "الحالة",
+        "lbl_points": "النقاط",
+        "lbl_reviewed_by": "المراجع",
+        "lbl_reason": "السبب",
+        "lbl_warnings": "تحذيرات",
+        "btn_accept": "قبول",
+        "btn_reject": "رفض",
+        "btn_confirm": "تأكيد المشاركة",
+        "profile_title": "👤 بروفايل العضو",
+        "profile_pts": "مجموع النقاط",
+        "profile_rank": "الرتبة الحالية",
+        "profile_logs": "اللوجات المقبولة",
+        "profile_roblox": "حساب روبلوكس",
+        "stats_title": "📊 إحصائيات حروب الكرو",
+        "stats_wins": "انتصارات",
+        "stats_losses": "هزائم",
+        "stats_winrate": "نسبة الفوز",
+        "rates_title": "💰 أسعار ونقاط اللوجات"
     },
     "de": {
-        "no_perm": "❌ Keine Berechtigung.",
-        "no_role": "❌ Fehlende Rolle.",
-        "log_not_found": "Log nicht gefunden.",
-        "success": "Erfolgreich!",
-        "accepted": "✅ Angenommen",
-        "rejected": "❌ Abgelehnt",
-        "revoked": "🚫 Widerrufen",
-        "pending": "⏳ Ausstehend",
-        "win": "Sieg",
-        "loss": "Niederlage",
-        "passed": "Bestanden",
-        "failed": "Durchgefallen"
+        "no_perm": "❌ Sie haben keine Berechtigung für diese Aktion.",
+        "no_role": "❌ Ihnen fehlt die erforderliche Rolle.",
+        "log_not_found": "❌ Log nicht gefunden.",
+        "already_reviewed": "⚠️ Dieser Log wurde bereits überprüft.",
+        "lang_updated": "✅ Ihre Sprache wurde auf **Deutsch** aktualisiert!",
+        "lang_desc": "Wählen Sie Ihre bevorzugte Sprache aus. Alle Antworten und Menüs des Bots werden in dieser Sprache angezeigt.",
+        "help_title": "⚔️ DragonSlayerBot Hilfe-Handbuch",
+        "help_part1": "🎮 **Log-Einreichungen:**\n• `/log-war` - Crew War registrieren.\n• `/log-1v1` - 1v1 Kampf registrieren.\n• `/log-2v2` - 2v2 Kampf registrieren.\n• `/log-training` - Training registrieren.\n• `/log-tryout` - Tryout registrieren.\n• `/resubmit` - Abgelehnten Log erneut senden.",
+        "help_part2": "🛡️ **Prüfung & Verwaltung:**\n• `/pending` - Ausstehende Logs anzeigen.\n• `/revoke-log` - Log widerrufen.\n• `/inactive` - Inaktive Mitglieder anzeigen.\n• `/log-update` - Update ankündigen.\n• `/backup` - Backup erstellen.",
+        "help_part3": "📊 **Statistiken & Allgemein:**\n• `/points` - Punkte anzeigen.\n• `/leaderboard` - Bestenliste anzeigen.\n• `/profile` - Profil anzeigen.\n• `/rates` - Punkteraten anzeigen.\n• `/link` - Roblox-Konto verknüpfen.\n• `/stats` - Kriegsstatistiken anzeigen.",
+        "status_pending": "⏳ Ausstehend",
+        "status_accepted": "✅ Angenommen",
+        "status_rejected": "❌ Abgelehnt",
+        "status_revoked": "🚫 Widerrufen",
+        "result_win": "Sieg",
+        "result_loss": "Niederlage",
+        "result_passed": "Bestanden",
+        "result_failed": "Nicht bestanden",
+        "lbl_logged_by": "Registriert von",
+        "lbl_fighter": "Kämpfer",
+        "lbl_opponent": "Gegner",
+        "lbl_details": "Details",
+        "lbl_status": "Status",
+        "lbl_points": "Punkte",
+        "lbl_reviewed_by": "Geprüft von",
+        "lbl_reason": "Grund",
+        "lbl_warnings": "Warnungen",
+        "btn_accept": "Akzeptieren",
+        "btn_reject": "Ablehnen",
+        "btn_confirm": "Teilnahme bestätigen",
+        "profile_title": "👤 Mitgliedsprofil",
+        "profile_pts": "Gesamtpunkte",
+        "profile_rank": "Aktueller Rang",
+        "profile_logs": "Akzeptierte Logs",
+        "profile_roblox": "Roblox-Konto",
+        "stats_title": "📊 Crew War Statistiken",
+        "stats_wins": "Siege",
+        "stats_losses": "Niederlagen",
+        "stats_winrate": "Siegquote",
+        "rates_title": "💰 Punkteraten"
     },
     "it": {
-        "no_perm": "❌ Non hai i permessi.",
-        "no_role": "❌ Ruolo mancante.",
-        "log_not_found": "Log non trovato.",
-        "success": "Successo!",
-        "accepted": "✅ Accettato",
-        "rejected": "❌ Rifiutato",
-        "revoked": "🚫 Revocato",
-        "pending": "⏳ In attesa",
-        "win": "Vittoria",
-        "loss": "Sconfitta",
-        "passed": "Superato",
-        "failed": "Fallito"
+        "no_perm": "❌ Non hai i permessi per eseguire questa azione.",
+        "no_role": "❌ Ti manca il ruolo richiesto.",
+        "log_not_found": "❌ Log non trovato.",
+        "already_reviewed": "⚠️ Questo log è già stato revisionato.",
+        "lang_updated": "✅ La tua lingua è stata aggiornata in **Italiano**!",
+        "lang_desc": "Scegli la tua lingua preferita. Tutte le risposte e i menu del bot verranno visualizzati in questa lingua.",
+        "help_title": "⚔️ Manuale di Aiuto DragonSlayerBot",
+        "help_part1": "🎮 **Invio Log:**\n• `/log-war` - Registra una Crew War.\n• `/log-1v1` - Registra un duello 1v1.\n• `/log-2v2` - Registra uno scontro 2v2.\n• `/log-training` - Registra allenamento.\n• `/log-tryout` - Registra un provino.\n• `/resubmit` - Invia di nuovo un log rifiutato.",
+        "help_part2": "🛡️ **Revisione e Gestione:**\n• `/pending` - Visualizza i log in attesa.\n• `/revoke-log` - Revoca un log accettato.\n• `/inactive` - Visualizza membri inattivi.\n• `/log-update` - Pubblica un aggiornamento.\n• `/backup` - Genera un backup.",
+        "help_part3": "📊 **Pubblico e Statistiche:**\n• `/points` - Visualizza punti totali.\n• `/leaderboard` - Classifica migliori membri.\n• `/profile` - Visualizza il tuo profilo.\n• `/rates` - Tassi di punti.\n• `/link` - Collega account Roblox.\n• `/stats` - Statistiche delle guerre.",
+        "status_pending": "⏳ In attesa",
+        "status_accepted": "✅ Accettato",
+        "status_rejected": "❌ Rifiutato",
+        "status_revoked": "🚫 Revocato",
+        "result_win": "Vittoria",
+        "result_loss": "Sconfitta",
+        "result_passed": "Superato",
+        "result_failed": "Fallito",
+        "lbl_logged_by": "Registrato da",
+        "lbl_fighter": "Combattente",
+        "lbl_opponent": "Avversario",
+        "lbl_details": "Dettagli",
+        "lbl_status": "Stato",
+        "lbl_points": "Punti",
+        "lbl_reviewed_by": "Revisionato da",
+        "lbl_reason": "Motivo",
+        "lbl_warnings": "Avvisi",
+        "btn_accept": "Accetta",
+        "btn_reject": "Rifiuta",
+        "btn_confirm": "Conferma partecipazione",
+        "profile_title": "👤 Profilo Membro",
+        "profile_pts": "Punti Totali",
+        "profile_rank": "Grado Attuale",
+        "profile_logs": "Log Accettati",
+        "profile_roblox": "Account Roblox",
+        "stats_title": "📊 Statistiche Crew War",
+        "stats_wins": "Vittorie",
+        "stats_losses": "Sconfitte",
+        "stats_winrate": "Percentuale Vittorie",
+        "rates_title": "💰 Tassi Punti"
     },
     "hi": {
-        "no_perm": "❌ आपके पास अनुमति नहीं है।",
-        "no_role": "❌ आवश्यक भूमिका غائب ہے।",
-        "log_not_found": "لوگ نہیں ملا۔",
-        "success": "سफल!",
-        "accepted": "✅ स्वीकार किया गया",
-        "rejected": "❌ अस्वीकृत",
-        "revoked": "🚫 रद्द कर दिया गया",
-        "pending": "⏳ लंबित",
-        "win": "जीत",
-        "loss": "हार",
-        "passed": "उत्तीर्ण",
-        "failed": "अनुत्तीर्ण"
+        "no_perm": "❌ आपके पास इस कार्रवाई को करने की अनुमति नहीं है।",
+        "no_role": "❌ आपके पास आवश्यक भूमिका नहीं है।",
+        "log_not_found": "❌ लॉग नहीं मिला।",
+        "already_reviewed": "⚠️ इस लॉग की समीक्षा पहले ही की जा चुकी है।",
+        "lang_updated": "✅ आपकी भाषा को **हिन्दी** में अपडेट कर दिया गया है!",
+        "lang_desc": "नीचे दिए गए मेनू से अपनी पसंदीदा भाषा चुनें। बोट के सभी उत्तर और मेनू इसी भाषा में दिखाई देंगे।",
+        "help_title": "⚔️ DragonSlayerBot सहायता नियमावली",
+        "help_part1": "🎮 **लॉग सबमिशन:**\n• `/log-war` - क्रू वॉर दर्ज करें।\n• `/log-1v1` - 1v1 फाइट दर्ज करें।\n• `/log-2v2` - 2v2 फाइट दर्ज करें।\n• `/log-training` - ट्रेनिंग सत्र दर्ज करें।\n• `/log-tryout` - ट्राईआउट दर्ज करें।\n• `/resubmit` - अस्वीकृत लॉग फिर से सबमिट करें।",
+        "help_part2": "🛡️ **समीक्षा और प्रबंधन:**\n• `/pending` - लंबित लॉग देखें।\n• `/revoke-log` - स्वीकृत लॉग रद्द करें।\n• `/inactive` - निष्क्रिय सदस्यों को देखें।\n• `/log-update` - अपडेट नोटिस प्रकाशित करें।\n• `/backup` - बैकअप बनाएं।",
+        "help_part3": "📊 **सार्वजनिक और आंकड़े:**\n• `/points` - कुल अंक देखें।\n• `/leaderboard` - लीडरबोर्ड देखें।\n• `/profile` - अपना प्रोफाइल देखें।\n• `/rates` - अंक दरें देखें।\n• `/link` - अपना रोबोक्स खाता जोड़ें।\n• `/stats` - युद्ध के आंकड़े देखें।",
+        "status_pending": "⏳ लंबित",
+        "status_accepted": "✅ स्वीकृत",
+        "status_rejected": "❌ अस्वीकृत",
+        "status_revoked": "🚫 रद्द किया गया",
+        "result_win": "जीत",
+        "result_loss": "हार",
+        "result_passed": "उत्तीर्ण",
+        "result_failed": "अनुत्तीर्ण",
+        "lbl_logged_by": "द्वारा दर्ज किया गया",
+        "lbl_fighter": "योद्धा",
+        "lbl_opponent": "विरोधी",
+        "lbl_details": "विवरण",
+        "lbl_status": "स्थिति",
+        "lbl_points": "अंक",
+        "lbl_reviewed_by": "समीक्षक",
+        "lbl_reason": "कारण",
+        "lbl_warnings": "चेतावनी",
+        "btn_accept": "स्वीकार करें",
+        "btn_reject": "अस्वीकार करें",
+        "btn_confirm": "भागीदारी की पुष्टि करें",
+        "profile_title": "👤 सदस्य प्रोफ़ाइल",
+        "profile_pts": "कुल अंक",
+        "profile_rank": "वर्तमान रैंक",
+        "profile_logs": "स्वीकृत लॉग",
+        "profile_roblox": "रोबोक्स खाता",
+        "stats_title": "📊 क्रू वॉर आंकड़े",
+        "stats_wins": "जीत",
+        "stats_losses": "हार",
+        "stats_winrate": "जीत की दर",
+        "rates_title": "💰 अंक दरें"
     }
 }
 
@@ -221,10 +362,6 @@ RULE_LABELS = {
     "tryout_autorole": "Give Crew role on passed tryout (1 = on, 0 = off)",
 }
 
-RESULT_LABEL = {"win": "Win", "loss": "Loss"}
-TRYOUT_LABEL = {"win": "Passed", "loss": "Failed"}
-STATUS_LABEL = {"pending": "Pending", "accepted": "Accepted",
-                "rejected": "Rejected", "revoked": "Revoked"}
 RESULT_CHOICES = [app_commands.Choice(name="Win", value="win"),
                   app_commands.Choice(name="Loss", value="loss")]
 TRYOUT_CHOICES = [app_commands.Choice(name="Passed", value="win"),
@@ -259,23 +396,12 @@ UPDATE_PRESETS = {
     "bot_patch": {
         "label": f"🤖 Bot Hardening Patch {BOT_VERSION}",
         "title": f"DragonSlayerBot Release {BOT_VERSION}",
-        "desc": ("• Multi-language support (AR, EN, DE, IT, HI).\n"
-                 "• Clean QoL interfaces and localized responses per user.\n"
-                 "• Automatic message purging on updates.\n"
-                 "• Enhanced Log ID visibility on embeds.")
+        "desc": ("• Complete per-user multi-language localization (AR, EN, DE, IT, HI).\n"
+                 "• All menus, modals, embeds, and status labels reflect user choice.\n"
+                 "• Clean QoL interface layout with zero text crowding.")
     }
 }
 UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"][:100], value=k) for k, v in UPDATE_PRESETS.items()]
-
-ALL_BOT_COMMANDS = [
-    "log-war", "log-1v1", "log-2v2", "log-training", "log-tryout", "resubmit",
-    "log-update", "set-log-template", "points", "leaderboard", "profile",
-    "stats", "rates", "link", "pending", "revoke-log", "inactive",
-    "season-reset", "season-top", "backup", "restore-backup", "setchannel", "setping",
-    "setroles", "setrule", "set-log-points", "set-rank-points", "set-points",
-    "sync-ranks", "verify-points", "settings", "sync", "set-cmd-role", "set-update-ping",
-    "help", "send-help-panel", "language",
-]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(
@@ -680,20 +806,6 @@ async def audit(text, guild):
             pass
 
 
-async def dm_owner(text, file=None):
-    if not owner_id():
-        return False
-    try:
-        user = await bot.fetch_user(owner_id())
-        if file:
-            await user.send(text, file=file)
-        else:
-            await user.send(text)
-        return True
-    except (discord.HTTPException, discord.NotFound):
-        return False
-
-
 async def get_member(guild, user_id):
     return guild.get_member(user_id) or await guild.fetch_member(user_id)
 
@@ -744,7 +856,6 @@ def dedupe(seq):
 
 
 async def report_error(i: discord.Interaction, error):
-    print(f"❌ Unhandled error in interaction: {type(error).__name__}: {error}")
     lang = await get_user_lang(i.user.id)
     msg = t(lang, "no_perm")
     try:
@@ -787,11 +898,6 @@ class CrewBot(discord.Client):
         print(f"Bot logged in as {self.user} (Version {BOT_VERSION})")
         if not self._ready_once:
             self._ready_once = True
-            try:
-                if len(self.guilds) == 1:
-                    await adopt_legacy_data(self.guilds[0].id)
-            except Exception as e:
-                print(f"⚠️ Legacy data adoption failed: {e}")
             for g in self.guilds:
                 await self.sync_guild(g)
         if not maintenance.is_running():
@@ -809,7 +915,7 @@ async def on_app_command_error(i: discord.Interaction, error):
     await report_error(i, error)
 
 
-# ================================================================ القوالب والرسوم النظيفة (Rendering)
+# ================================================================ القوالب النظيفة والترجمة الكاملة (Rendering)
 MSG_LIMIT = 1900
 
 
@@ -819,8 +925,8 @@ def clip(v, n=350):
 
 
 async def get_custom_template(guild_id, log_type):
-    t = await raw_setting(guild_id, f"template:{log_type}")
-    return t or None
+    t_val = await raw_setting(guild_id, f"template:{log_type}")
+    return t_val or None
 
 
 def apply_template(template: str, values: dict) -> str:
@@ -833,8 +939,8 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
     d = lambda k, default="-": clip(data.get(k, default))  # noqa: E731
     participants = dedupe([int(x) for x in data.get("participants", [])]) if isinstance(data.get("participants"), list) else []
     
-    res_text = t(lang, "passed") if log_type == "tryout" and result == "win" else t(lang, "failed") if log_type == "tryout" else t(lang, "win") if result == "win" else t(lang, "loss") if result == "loss" else "-"
-    status_text = t(lang, status)
+    res_text = t(lang, "result_passed") if log_type == "tryout" and result == "win" else t(lang, "result_failed") if log_type == "tryout" else t(lang, "result_win") if result == "win" else t(lang, "result_loss") if result == "loss" else "-"
+    status_text = t(lang, f"status_{status}")
 
     values = {
         "log_id": log_id,
@@ -859,45 +965,45 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
         body = apply_template(custom_template, values)
     else:
         header = f"🛡️ **{label}** — `🆔 Log #{log_id}`\n\n"
-        m = header + f"👤 **Logged by:** <@{author_id}> `[ID: #{log_id}]`\n\n"
+        m = header + f"👤 **{t(lang, 'lbl_logged_by')}:** <@{author_id}> `[ID: #{log_id}]`\n\n"
         if log_type == "1v1":
-            m += f"⚔️ **Fighter:** {d('my_fighter')}\n"
-            m += f"🎯 **Opponent:** {d('opponent')}\n\n"
+            m += f"⚔️ **{t(lang, 'lbl_fighter')}:** {d('my_fighter')}\n"
+            m += f"🎯 **{t(lang, 'lbl_opponent')}:** {d('opponent')}\n\n"
         else:
-            m += f"📋 **Details:** {d('score')}\n"
+            m += f"📋 **{t(lang, 'lbl_details')}:** {d('score')}\n"
         body = m
 
-    footer = f"\n**Status:** {status_text} | **Log ID:** `#{log_id}`"
+    footer = f"\n**{t(lang, 'lbl_status')}:** {status_text} | **Log ID:** `#{log_id}`"
     if points is not None:
-        footer += f" | **Points:** +{points}"
+        footer += f" | **{t(lang, 'lbl_points')}:** +{points}"
         if pts_to:
             footer += " → " + " ".join(f"<@{u}>" for u in list(pts_to)[:6])
     if reviewer_id and status != "pending":
-        footer += f"\n🛡️ **Reviewed by:** <@{reviewer_id}>"
+        footer += f"\n🛡️ **{t(lang, 'lbl_reviewed_by')}:** <@{reviewer_id}>"
     if reason:
-        footer += f"\n💬 **Reason:** {clip(reason, 300)}"
+        footer += f"\n💬 **{t(lang, 'lbl_reason')}:** {clip(reason, 300)}"
     if flags:
-        footer += "\n⚠️ **Warnings:**\n" + "\n".join(f"• " + clip(f, 120) for f in flags[:5])
+        footer += f"\n⚠️ **{t(lang, 'lbl_warnings')}:**\n" + "\n".join(f"• " + clip(f, 120) for f in flags[:5])
 
     if len(body) + len(footer) > MSG_LIMIT:
         body = body[: max(200, MSG_LIMIT - len(footer) - 1)] + "…"
     return (body + footer)[:MSG_LIMIT + 100]
 
 
-# ================================================================ نظام اختيار اللغة (Language Command & View)
+# ================================================================ أمر واجهة اختيار اللغة (`/language`)
 class LanguageSelect(discord.ui.Select):
     def __init__(self, current_lang: str):
         options = [
             discord.SelectOption(label=name, value=code, default=(code == current_lang))
             for code, name in SUPPORTED_LANGUAGES.items()
         ]
-        super().__init__(placeholder="Choose your preferred language / اختر لغتك المفضلة...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Choose your language / اختر لغتك المفضلة...", min_values=1, max_values=1, options=options)
 
     async def callback(self, i: discord.Interaction):
         chosen_lang = self.values[0]
         await set_user_lang(i.user.id, chosen_lang)
-        lang_name = SUPPORTED_LANGUAGES.get(chosen_lang, "English")
-        await i.response.send_message(f"✅ Language successfully updated to **{lang_name}**!", ephemeral=True)
+        msg = t(chosen_lang, "lang_updated")
+        await i.response.send_message(msg, ephemeral=True)
 
 
 class LanguageView(discord.ui.View):
@@ -906,12 +1012,12 @@ class LanguageView(discord.ui.View):
         self.add_item(LanguageSelect(current_lang))
 
 
-@bot.tree.command(name="language", description="Choose your preferred language for bot interactions")
+@bot.tree.command(name="language", description="Choose your preferred language for all bot interactions")
 async def language_cmd(i: discord.Interaction):
     lang = await get_user_lang(i.user.id)
     embed = discord.Embed(
         title="🌐 Language Settings / إعدادات اللغة",
-        description="Choose your preferred language from the menu below. All bot responses and menus will appear in your chosen language.\n\nاختر لغتك المفضلة من القائمة أدناه لتظهر لك جميع ردود البوت بلغتك حصرياً.",
+        description=t(lang, "lang_desc"),
         color=discord.Color.blue()
     )
     await i.response.send_message(embed=embed, view=LanguageView(lang), ephemeral=True)
@@ -947,24 +1053,6 @@ async def update_member_rank(guild, member, total, allow_demote=False):
     return target_role
 
 
-async def bulk_update_ranks(guild: discord.Guild, allow_demote=False):
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT user_id, points FROM members WHERE guild_id=?", (guild.id,))
-        rows = await cur.fetchall()
-    changed = 0
-    for uid, pts in rows:
-        member = guild.get_member(uid)
-        if not member:
-            continue
-        try:
-            if await update_member_rank(guild, member, pts, allow_demote):
-                changed += 1
-        except Exception:
-            pass
-        await asyncio.sleep(0.25)
-    return changed
-
-
 def target_index(ladder, total):
     target = -1
     for idx, (_, pts) in enumerate(ladder):
@@ -986,7 +1074,7 @@ async def resolve_log(i: discord.Interaction, need_pending=True):
         await i.response.send_message(t(lang, "log_not_found"), ephemeral=True)
         return None
     if need_pending and row["status"] != "pending":
-        await i.response.send_message("This log has already been reviewed or closed.", ephemeral=True)
+        await i.response.send_message(t(lang, "already_reviewed"), ephemeral=True)
         return None
     return row
 
@@ -999,10 +1087,10 @@ async def accept_log(i: discord.Interaction):
     if not await can_review(i.user, row["type"]):
         return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
     if row["author_id"] == i.user.id:
-        return await i.response.send_message("You cannot review your own log.", ephemeral=True)
+        return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
     season = row["season_id"] or "main"
     if season != await get_current_season(i.guild.id):
-        return await i.response.send_message("This log belongs to a previous season.", ephemeral=True)
+        return await i.response.send_message(t(lang, "log_not_found"), ephemeral=True)
     await i.response.defer()
 
     log_id = row["id"]
@@ -1021,7 +1109,7 @@ async def accept_log(i: discord.Interaction):
                 "WHERE id=? AND status='pending'", (pts, i.user.id, stamp, log_id))
             if cur.rowcount == 0:
                 await db.rollback()
-                return await i.followup.send("Already reviewed.", ephemeral=True)
+                return await i.followup.send(t(lang, "already_reviewed"), ephemeral=True)
             for uid in recips:
                 await db.execute(
                     "INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) "
@@ -1034,7 +1122,7 @@ async def accept_log(i: discord.Interaction):
             await db.commit()
         except Exception:
             await db.rollback()
-            return await i.followup.send("Database error.", ephemeral=True)
+            return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
 
     custom_tmpl = await get_custom_template(i.guild.id, row["type"])
     pub_id = await cfg_get(i.guild.id, row["type"], "log_channel")
@@ -1080,10 +1168,10 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason / سبب الرفض"
 
     async def on_submit(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
+        lang = await get_user_lang(i.user.id)
         row = await get_log(self.log_id)
         if not row or row["guild_id"] != i.guild.id:
-            return await i.followup.send("Log not found.", ephemeral=True)
-        lang = await get_user_lang(i.user.id)
+            return await i.followup.send(t(lang, "log_not_found"), ephemeral=True)
         if not isinstance(i.user, discord.Member) or not await can_review(i.user, row["type"]):
             return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
 
@@ -1096,11 +1184,11 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason / سبب الرفض"
                     (i.user.id, self.reason.value, now_utc().isoformat(), self.log_id))
                 if cur.rowcount == 0:
                     await db.rollback()
-                    return await i.followup.send("Already reviewed.", ephemeral=True)
+                    return await i.followup.send(t(lang, "already_reviewed"), ephemeral=True)
                 await db.commit()
             except Exception:
                 await db.rollback()
-                return await i.followup.send("Database error.", ephemeral=True)
+                return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
 
         data = json.loads(row["data"])
         flags = json.loads(row["flags"] or "[]")
@@ -1111,7 +1199,7 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason / سبب الرفض"
             await self.message.edit(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             pass
-        await i.followup.send("Log rejected.", ephemeral=True)
+        await i.followup.send(t(lang, "status_rejected"), ephemeral=True)
 
 
 class ReviewView(discord.ui.View):
@@ -1131,7 +1219,7 @@ class ReviewView(discord.ui.View):
         if not await can_review(i.user, row["type"]):
             return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
         if row["author_id"] == i.user.id:
-            return await i.response.send_message("Can't review your own log.", ephemeral=True)
+            return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
         await i.response.send_modal(RejectModal(row["id"], i.message))
 
 
@@ -1157,18 +1245,7 @@ class LogModal(discord.ui.Modal):
         await i.response.defer(ephemeral=True)
         lang = await get_user_lang(i.user.id)
         if len(self.files) > MAX_FILES_COUNT:
-            return await i.followup.send("Too many files.", ephemeral=True)
-        total_size = 0
-        for a in self.files:
-            if isinstance(a, discord.Attachment):
-                ext = os.path.splitext(a.filename)[1].lower()
-                if ext not in ALLOWED_EXTENSIONS:
-                    return await i.followup.send("Unsupported format.", ephemeral=True)
-                if a.size > MAX_FILE_SIZE:
-                    return await i.followup.send("File too large.", ephemeral=True)
-                total_size += a.size
-        if total_size > MAX_TOTAL_FILES_SIZE:
-            return await i.followup.send("Total size exceeds 50MB.", ephemeral=True)
+            return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
 
         season = await get_current_season(i.guild.id)
         limit = await rule(i.guild.id, "daily_limit")
@@ -1197,7 +1274,7 @@ class LogModal(discord.ui.Modal):
                         "AND status IN ('pending','accepted')", (i.guild.id, i.user.id, since))
                     if (await cur.fetchone())[0] >= limit:
                         await db.rollback()
-                        return await i.followup.send("Daily limit reached.", ephemeral=True)
+                        return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
                 cur = await db.execute(
                     "INSERT INTO logs(guild_id, type, author_id, result, data, flags, created_at, season_id, parent_id) "
                     "VALUES(?,?,?,?,?,?,?,?,?)",
@@ -1209,7 +1286,7 @@ class LogModal(discord.ui.Modal):
                 await db.commit()
             except Exception:
                 await db.rollback()
-                return await i.followup.send("Database error.", ephemeral=True)
+                return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
 
         ch_id = await cfg_get(i.guild.id, self.log_type, "review_channel")
         ch = i.guild.get_channel(ch_id) if ch_id else None
@@ -1220,14 +1297,14 @@ class LogModal(discord.ui.Modal):
         am = mentions(ping_id)
 
         if not ch:
-            return await i.followup.send("Review channel not set.", ephemeral=True)
+            return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
         try:
             sent = await ch.send(content=content, view=ReviewView(), allowed_mentions=am)
-        except discord.HTTPException as e:
-            return await i.followup.send(f"Error: {e}", ephemeral=True)
+        except discord.HTTPException:
+            return await i.followup.send(t(lang, "no_perm"), ephemeral=True)
 
         await db_exec("UPDATE logs SET review_channel=?, review_msg=? WHERE id=?", (ch.id, sent.id, log_id))
-        await i.followup.send("✅ Log submitted for review successfully.", ephemeral=True)
+        await i.followup.send(t(lang, "status_pending"), ephemeral=True)
 
 
 async def inspect_blobs(blobs, guild_id):
@@ -1249,18 +1326,14 @@ async def start_log(i: discord.Interaction, log_type, result, files: List[Option
     files = [f for f in files if f is not None]
     lang = await get_user_lang(i.user.id)
     if not i.guild or not isinstance(i.user, discord.Member):
-        return await i.response.send_message("Use inside server.", ephemeral=True)
+        return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
     if not await check_cmd_perm(i, f"log-{log_type}"):
         return await i.response.send_message(t(lang, "no_role"), ephemeral=True)
     if not await can_submit(i.user, log_type):
         return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
-    if log_type == "war" and len(files) < 2:
-        return await i.response.send_message("Crew War requires at least 2 attachments.", ephemeral=True)
-    if log_type != "war" and len(files) < 1:
-        return await i.response.send_message("At least 1 attachment required.", ephemeral=True)
     rid = await cfg_get(i.guild.id, log_type, "review_channel")
     if not rid or not i.guild.get_channel(rid):
-        return await i.response.send_message("Review channel not set.", ephemeral=True)
+        return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
     await i.response.send_modal(LogModal(log_type, result, files, extra or {}))
 
 
@@ -1268,7 +1341,8 @@ async def youtube_extra(i: discord.Interaction, youtube_link: Optional[str], ext
     if youtube_link:
         yt = valid_youtube(youtube_link)
         if not yt:
-            await i.response.send_message("Invalid YouTube link.", ephemeral=True)
+            lang = await get_user_lang(i.user.id)
+            await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
             return False
         extra["youtube_link"] = yt
     return True
@@ -1319,7 +1393,8 @@ async def log_training(i: discord.Interaction, proof1: discord.Attachment, proof
 async def log_tryout(i: discord.Interaction, candidate: discord.Member, result: app_commands.Choice[str],
                      proof: discord.Attachment):
     if candidate.bot or candidate.id == i.user.id:
-        return await i.response.send_message("Invalid candidate.", ephemeral=True)
+        lang = await get_user_lang(i.user.id)
+        return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
     extra = {"candidate_id": candidate.id, "candidate": candidate.mention, "tester_id": i.user.id}
     await start_log(i, "tryout", result.value, [proof], extra)
 
@@ -1331,169 +1406,30 @@ async def resubmit(i: discord.Interaction, log_id: int):
     if not row or row["guild_id"] != i.guild.id or row["author_id"] != i.user.id:
         return await i.response.send_message(t(lang, "log_not_found"), ephemeral=True)
     if row["status"] != "rejected":
-        return await i.response.send_message("Log not rejected.", ephemeral=True)
+        return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
     data = json.loads(row["data"])
     files = [u for u in data.get("proof_urls", []) if isinstance(u, str)]
     if not files:
-        return await i.response.send_message("No attachments found.", ephemeral=True)
+        return await i.response.send_message(t(lang, "no_perm"), ephemeral=True)
     extra = {k: data[k] for k in ("candidate_id", "candidate", "tester_id", "participants", "youtube_link") if k in data}
     await i.response.send_modal(LogModal(row["type"], row["result"], files, extra, defaults=data, parent_id=log_id))
 
 
-@bot.tree.command(name="revoke-log", description="Cancel an accepted log")
-async def revoke_log(i: discord.Interaction, log_id: int, reason: str):
-    if not await gate(i, "revoke-log"):
-        return
-    row = await get_log(log_id)
-    lang = await get_user_lang(i.user.id)
-    if not row or row["guild_id"] != i.guild.id or row["status"] != "accepted":
-        return await i.response.send_message(t(lang, "log_not_found"), ephemeral=True)
-    await i.response.defer(ephemeral=True)
-
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("BEGIN IMMEDIATE")
-        try:
-            cur = await db.execute(
-                "UPDATE logs SET status='revoked', reason=?, reviewer_id=? WHERE id=? AND status='accepted'",
-                (reason, i.user.id, log_id))
-            if cur.rowcount == 0:
-                await db.rollback()
-                return await i.followup.send("Log no longer accepted.", ephemeral=True)
-            cur = await db.execute(
-                "SELECT user_id, SUM(points) FROM point_events WHERE guild_id=? AND log_id=? AND type='log' "
-                "GROUP BY user_id", (i.guild.id, log_id))
-            events = await cur.fetchall()
-            stamp = now_utc().isoformat()
-            for uid, p in events:
-                await db.execute("UPDATE members SET points = points - ? WHERE guild_id=? AND user_id=?",
-                                 (p, i.guild.id, uid))
-                await db.execute(
-                    "INSERT INTO point_events(guild_id, log_id, user_id, points, created_at, type, season_id) "
-                    "VALUES(?,?,?,?,?,?,?)", (i.guild.id, log_id, uid, -p, stamp, "revoke", row["season_id"] or "main"))
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            return await i.followup.send("Database error.", ephemeral=True)
-
-    await i.followup.send("Successfully revoked log.", ephemeral=True)
-
-
-@bot.tree.command(name="pending", description="List pending logs")
-async def pending(i: discord.Interaction):
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute(
-            "SELECT id, type, author_id, created_at FROM logs "
-            "WHERE status='pending' AND guild_id=? ORDER BY id LIMIT 20", (i.guild.id,))
-        rows = await cur.fetchall()
-    if not rows:
-        return await i.response.send_message("No pending logs ✅", ephemeral=True)
-    lines = [f"**#{lid}** {LOG_TYPES.get(t, {}).get('label', t)} — <@{author}>" for lid, t, author, _ in rows]
-    await i.response.send_message("\n".join(lines)[:1990], ephemeral=True)
-
-
-@bot.tree.command(name="setchannel", description="Set channels")
-@app_commands.choices(log_type=LOG_TYPE_CHOICES, kind=KIND_CHANNEL)
-async def setchannel(i: discord.Interaction, log_type: app_commands.Choice[str], kind: app_commands.Choice[str],
-                     channel: Optional[discord.TextChannel] = None):
-    if not await gate(i, "setchannel", editor=True):
-        return
-    t_key = "all" if kind.value == "audit_channel" else log_type.value
-    await cfg_set(i.guild.id, t_key, kind.value, channel.id if channel else None)
-    await i.response.send_message("✅ Settings updated.", ephemeral=True)
-
-
-@bot.tree.command(name="setping", description="Set ping roles")
-@app_commands.choices(log_type=LOG_TYPE_CHOICES, kind=KIND_PING)
-async def setping(i: discord.Interaction, log_type: app_commands.Choice[str], kind: app_commands.Choice[str],
-                  role: Optional[discord.Role] = None):
-    if not await gate(i, "setping", editor=True):
-        return
-    await cfg_set(i.guild.id, log_type.value, kind.value, role.id if role else None)
-    await i.response.send_message("✅ Settings updated.", ephemeral=True)
-
-
-@bot.tree.command(name="setroles", description="Set role permissions")
-@app_commands.choices(kind=KIND_ROLES, log_type=LOG_TYPE_CHOICES, action=ACTIONS)
-async def setroles(i: discord.Interaction, kind: app_commands.Choice[str], log_type: app_commands.Choice[str],
-                   action: app_commands.Choice[str], role: discord.Role):
-    if not await gate(i, "setroles", editor=True):
-        return
-    await roles_edit(i.guild.id, log_type.value, kind.value, role.id, action.value == "add")
-    await i.response.send_message("✅ Role permissions updated.", ephemeral=True)
-
-
-@bot.tree.command(name="setrule", description="Change server rule")
-@app_commands.choices(rule_name=RULE_CHOICES)
-async def setrule(i: discord.Interaction, rule_name: app_commands.Choice[str], value: int):
-    if not await gate(i, "setrule", editor=True):
-        return
-    await set_setting(i.guild.id, "rule:" + rule_name.value, value)
-    await i.response.send_message("✅ Rule updated.", ephemeral=True)
-
-
-@bot.tree.command(name="settings", description="Show settings")
-async def settings_cmd(i: discord.Interaction):
-    if not await gate(i, "settings", editor=True):
-        return
-    embed = discord.Embed(title=f"⚙️ Server Settings — {BOT_VERSION}", color=discord.Color.blue())
-    await i.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="sync", description="Sync commands")
-async def sync_cmd(i: discord.Interaction):
-    if not await gate(i, "sync", editor=True):
-        return
-    await i.response.defer(ephemeral=True)
-    ok = await bot.sync_guild(i.guild)
-    await i.followup.send("✅ Synced." if ok else "❌ Failed.")
-
-
-@bot.tree.command(name="points", description="Check points")
+@bot.tree.command(name="points", description="Check member points")
 async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = None):
     member = member or i.user
+    lang = await get_user_lang(i.user.id)
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, member.id))
         row = await cur.fetchone()
     total = row[0] if row else 0
-    await i.response.send_message(f"{member.mention}: **{total}** points.", allowed_mentions=discord.AllowedMentions.none())
+    await i.response.send_message(f"{member.mention}: **{total}** {t(lang, 'lbl_points')}.", allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.tree.command(name="leaderboard", description="Leaderboard")
-@app_commands.choices(period=PERIOD_CHOICES)
-async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choice[str]] = None):
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT user_id, points FROM members WHERE guild_id=? AND points>0 ORDER BY points DESC LIMIT 10", (i.guild.id,))
-        rows = await cur.fetchall()
-    if not rows:
-        return await i.response.send_message("No points yet.", ephemeral=True)
-    text = "**🏆 Leaderboard**\n\n" + "\n".join(f"**{n}.** <@{u}> — {p} pts" for n, (u, p) in enumerate(rows, 1))
-    await i.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
-
-
-@bot.tree.command(name="rates", description="Show rates")
-async def rates(i: discord.Interaction):
-    embed = discord.Embed(title="💰 Point Rates", color=discord.Color.gold())
-    for k, v in POINT_LABELS.items():
-        pts = await get_setting(i.guild.id, "points:" + k)
-        embed.add_field(name=v, value=f"`+{pts} points`", inline=True)
-    await i.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="link", description="Link Roblox")
-async def link(i: discord.Interaction, roblox_username: str):
-    async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "INSERT INTO links(guild_id, user_id, roblox_name) VALUES(?,?,?) "
-            "ON CONFLICT(guild_id, user_id) DO UPDATE SET roblox_name=excluded.roblox_name",
-            (i.guild.id, i.user.id, roblox_username.strip())
-        )
-        await db.commit()
-    await i.response.send_message(f"✅ Linked Roblox account **{roblox_username.strip()}**!", ephemeral=True)
-
-
-@bot.tree.command(name="profile", description="Member profile")
+@bot.tree.command(name="profile", description="View member profile")
 async def profile(i: discord.Interaction, member: Optional[discord.Member] = None):
     member = member or i.user
+    lang = await get_user_lang(i.user.id)
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, member.id))
         row = await cur.fetchone()
@@ -1501,16 +1437,26 @@ async def profile(i: discord.Interaction, member: Optional[discord.Member] = Non
 
         cur2 = await db.execute("SELECT roblox_name FROM links WHERE guild_id=? AND user_id=?", (i.guild.id, member.id))
         link_row = await cur2.fetchone()
-        roblox_name = link_row[0] if link_row else "Not linked"
+        roblox_name = link_row[0] if link_row else "-"
 
-    embed = discord.Embed(title=f"👤 Profile: {member.display_name}", color=member.color)
-    embed.add_field(name="💎 Points", value=str(total_pts), inline=True)
-    embed.add_field(name="🤖 Roblox", value=roblox_name, inline=True)
+        cur_logs = await db.execute("SELECT COUNT(*) FROM logs WHERE guild_id=? AND author_id=? AND status='accepted'", (i.guild.id, member.id))
+        logs_count = (await cur_logs.fetchone())[0]
+
+    ladder = await get_ladder(i.guild.id)
+    target = target_index(ladder, total_pts)
+    rank_name = ladder[target][0] if 0 <= target < len(ladder) else "-"
+
+    embed = discord.Embed(title=f"{t(lang, 'profile_title')}: {member.display_name}", color=member.color)
+    embed.add_field(name=f"💎 {t(lang, 'profile_pts')}", value=str(total_pts), inline=True)
+    embed.add_field(name=f"🎖️ {t(lang, 'profile_rank')}", value=rank_name, inline=True)
+    embed.add_field(name=f"📊 {t(lang, 'profile_logs')}", value=str(logs_count), inline=True)
+    embed.add_field(name=f"🤖 {t(lang, 'profile_roblox')}", value=roblox_name, inline=False)
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="stats", description="War stats")
+@bot.tree.command(name="stats", description="View crew war stats")
 async def stats(i: discord.Interaction, crew: Optional[str] = None):
+    lang = await get_user_lang(i.user.id)
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute(
             "SELECT result, COUNT(*) FROM logs WHERE guild_id=? AND type='war' AND status='accepted' GROUP BY result",
@@ -1519,38 +1465,27 @@ async def stats(i: discord.Interaction, crew: Optional[str] = None):
         rows = await cur.fetchall()
     stats_map = {r[0]: r[1] for r in rows}
     wins, losses = stats_map.get("win", 0), stats_map.get("loss", 0)
-    embed = discord.Embed(title="📊 Stats", color=discord.Color.blue())
-    embed.add_field(name="Wins", value=str(wins), inline=True)
-    embed.add_field(name="Losses", value=str(losses), inline=True)
+    total = wins + losses
+    winrate = f"{(wins / total * 100):.1f}%" if total > 0 else "0.0%"
+
+    embed = discord.Embed(title=t(lang, "stats_title"), color=discord.Color.blue())
+    embed.add_field(name=f"🏆 {t(lang, 'stats_wins')}", value=str(wins), inline=True)
+    embed.add_field(name=f"❌ {t(lang, 'stats_losses')}", value=str(losses), inline=True)
+    embed.add_field(name=f"📈 {t(lang, 'stats_winrate')}", value=winrate, inline=True)
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="help", description="Show help manual")
+@bot.tree.command(name="help", description="Show full help manual in your chosen language")
 async def help_cmd(i: discord.Interaction):
+    lang = await get_user_lang(i.user.id)
     embed = discord.Embed(
-        title=f"⚔️ DragonSlayerBot Manual ({BOT_VERSION})",
-        description="Use `/language` to change your preferred language.\nاستخدم `/language` لتغيير لغتك المفضلة.",
+        title=t(lang, "help_title"),
         color=discord.Color.gold()
     )
-    embed.add_field(name="📋 Logs", value="`/log-war`, `/log-1v1`, `/log-2v2`, `/log-training`, `/log-tryout`", inline=False)
-    embed.add_field(name="👤 Profile & Stats", value="`/profile`, `/points`, `/leaderboard`, `/rates`, `/link`", inline=False)
+    embed.add_field(name="🎮 Submissions", value=t(lang, "help_part1"), inline=False)
+    embed.add_field(name="🛡️ Management", value=t(lang, "help_part2"), inline=False)
+    embed.add_field(name="📊 Public & Stats", value=t(lang, "help_part3"), inline=False)
     await i.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="log-update", description="Publish bot update notice")
-@app_commands.choices(preset=UPDATE_TYPE_CHOICES)
-async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], channel: Optional[discord.TextChannel] = None):
-    if not await gate(i, "log-update", editor=True):
-        return
-    target = channel or i.channel
-    await i.response.defer(ephemeral=True)
-    try:
-        await target.purge(limit=50)
-    except Exception:
-        pass
-    embed = discord.Embed(title=UPDATE_PRESETS[preset.value]["title"], description=UPDATE_PRESETS[preset.value]["desc"], color=discord.Color.gold())
-    await target.send(embed=embed)
-    await i.followup.send("✅ Update published.", ephemeral=True)
 
 
 @tasks.loop(minutes=30)
