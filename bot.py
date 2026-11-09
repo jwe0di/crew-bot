@@ -84,7 +84,7 @@ TRANSLATIONS = {
         "no_perm": "❌ अनुमति नहीं है।",
         "no_role": "❌ भूमिका अनुपस्थित है।",
         "log_not_found": "❌ लॉग नहीं मिला।",
-        "already_reviewed": "⚠️ पहले ही समीक्षा کی जा चुकी ہے۔",
+        "already_reviewed": "⚠️ پہلے ہی समीक्षा کی جا چکی ہے۔",
         "lang_updated": "✅ भाषा **हिन्दी** में अपडेट की गई!",
         "lang_desc": "भाषा चुनें।",
     }
@@ -211,7 +211,7 @@ RESULT_CHOICES = [app_commands.Choice(name="Win", value="win"),
                   app_commands.Choice(name="Loss", value="loss")]
 TRYOUT_CHOICES = [app_commands.Choice(name="Passed", value="win"),
                   app_commands.Choice(name="Failed", value="loss")]
-LOG_TYPE_CHOICES = [app_commands.Choice(name="All types (default)", value="all")] + [
+LOG_TYPE_CHOICES = [app_commands.Choice(name="All types (default", value="all")] + [
     app_commands.Choice(name=v["label"][:100], value=k) for k, v in LOG_TYPES.items()]
 KIND_CHANNEL = [
     app_commands.Choice(name="Review channel (قناة المراجعة)", value="review_channel"),
@@ -233,9 +233,6 @@ RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in LADDER]
 BACKUP_SCOPE_CHOICES = [
     app_commands.Choice(name="Guild Activity & Today (نشاط السيرفر اليوم)", value="today"),
     app_commands.Choice(name="Full Database [Owner Only] (قاعدة البيانات كاملة)", value="full")]
-BACKUP_DEST_CHOICES = [
-    app_commands.Choice(name="Here in chat (هنا في الشات)", value="chat"),
-    app_commands.Choice(name="Bot Owner DM (خاص صاحب البوت)", value="owner")]
 
 UPDATE_PRESETS = {
     "bot_patch": {
@@ -261,7 +258,7 @@ ALL_BOT_COMMANDS = [
     "season-reset", "season-top", "backup", "restore-backup", "setchannel", "setping",
     "setroles", "setrule", "set-log-points", "set-rank-points", "set-points",
     "sync-ranks", "verify-points", "settings", "sync", "set-cmd-role", "set-update-ping",
-    "help", "send-help-panel", "language", "create-new-crew"
+    "help", "send-help-panel", "language", "create-new-crew", "edit-crew"
 ]
 
 SCHEMA = """
@@ -275,6 +272,10 @@ CREATE TABLE IF NOT EXISTS members(
 );
 CREATE TABLE IF NOT EXISTS user_languages(
     user_id INTEGER PRIMARY KEY, lang TEXT DEFAULT 'en'
+);
+CREATE TABLE IF NOT EXISTS guilds_crews(
+    guild_id INTEGER, crew_name TEXT, roster_data TEXT,
+    PRIMARY KEY(guild_id, crew_name)
 );
 CREATE TABLE IF NOT EXISTS guild_channels(
     guild_id INTEGER PRIMARY KEY, review_channel INTEGER, log_channel INTEGER, audit_channel INTEGER
@@ -1801,7 +1802,14 @@ async def profile(i: discord.Interaction, member: Optional[discord.Member] = Non
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="stats", description="War stats / إحصائيات الحروب")
+async def get_crew_choices(interaction: discord.Interaction):
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT crew_name FROM guilds_crews WHERE guild_id=?", (interaction.guild.id,))
+        rows = await cur.fetchall()
+    return [app_commands.Choice(name=r[0], value=r[0]) for r in rows][:25]
+
+@bot.tree.command(name="stats", description="War stats / إحصائيات الحروب والطواقم")
+@app_commands.autocomplete(crew=get_crew_choices)
 async def stats(i: discord.Interaction, crew: Optional[str] = None):
     if not await gate(i, "stats"):
         return
@@ -1811,6 +1819,13 @@ async def stats(i: discord.Interaction, crew: Optional[str] = None):
             (i.guild.id,)
         )
         rows = await cur.fetchall()
+        
+        crew_details_text = ""
+        if crew:
+            cur_crew = await db.execute("SELECT roster_data FROM guilds_crews WHERE guild_id=? AND crew_name=?", (i.guild.id, crew))
+            c_row = await cur_crew.fetchone()
+            if c_row:
+                crew_details_text = c_row[0]
     
     stats_map = {r[0]: r[1] for r in rows}
     wins = stats_map.get("win", 0)
@@ -1818,12 +1833,15 @@ async def stats(i: discord.Interaction, crew: Optional[str] = None):
     total_wars = wins + losses
     ratio = f"{(wins / total_wars * 100):.1f}%" if total_wars > 0 else "0.0%"
 
-    embed = discord.Embed(title="📊 Crew War Statistics / إحصائيات حروب الكرو", color=discord.Color.blue())
+    embed = discord.Embed(title=f"📊 Statistics & Crew Info: {crew or 'General'}", color=discord.Color.blue())
     embed.add_field(name="🏆 Wins / انتصارات", value=str(wins), inline=True)
     embed.add_field(name="❌ Losses / هزائم", value=str(losses), inline=True)
     embed.add_field(name="📈 Win Rate / نسبة الفوز", value=ratio, inline=True)
-    embed.set_footer(text=f"Total Wars Logged: {total_wars}")
     
+    if crew and crew_details_text:
+        embed.add_field(name=f"🏴‍☠️ Crew Roster: {crew}", value=crew_details_text, inline=False)
+        
+    embed.set_footer(text=f"Total Wars Logged: {total_wars}")
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -1879,7 +1897,7 @@ async def season_top(i: discord.Interaction, name: str):
     await i.response.send_message("Season archive top.", ephemeral=True)
 
 
-# ================================================================ أوامر اللغات وإنشاء الكرو الجديد (New Additions)
+# ================================================================ أوامر الطواقم والتعديل التفاعلي
 class LanguageSelectView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=60)
@@ -1904,32 +1922,84 @@ async def language_cmd(i: discord.Interaction):
     await i.response.send_message(embed=embed, view=LanguageSelectView(i.user.id), ephemeral=True)
 
 
-class CreateCrewModal(discord.ui.Modal, title="Create New Crew / إنشاء كرو جديد"):
-    crew_name = discord.ui.TextInput(label="Crew Name / اسم الكرو", placeholder="e.g. Dragon Slayers", required=True)
-    captains = discord.ui.TextInput(label="Captains [Name - Spec - @User]", style=discord.TextStyle.paragraph, placeholder="Ziad - PvP - @user1", required=True)
-    vices = discord.ui.TextInput(label="Vice Captains [Name - Spec - @User]", style=discord.TextStyle.paragraph, placeholder="Ahmed - Support - @user2", required=False)
-    teams_z_y = discord.ui.TextInput(label="Teams Z & Y [Name - Spec - @User]", style=discord.TextStyle.paragraph, placeholder="Team Z:\nAli - Fruit - @user3\n\nTeam Y:\nOmar - Sword - @user4", required=False)
-    teams_x_s_a = discord.ui.TextInput(label="Teams X, S & A [Name - Spec - @User]", style=discord.TextStyle.paragraph, placeholder="Team X:\nSayed - Gun - @user5", required=False)
+class AddMorePlayerModal(discord.ui.Modal, title="إضافة لاعب آخر للكرو"):
+    player_info = discord.ui.TextInput(label="اسم اللاعب والتخصص والمنشن", placeholder="مثال: زياد - فاكهة دوق - @Ziad", style=discord.TextStyle.short, required=True)
+
+    def __init__(self, crew_name: str, current_roster: str):
+        super().__init__()
+        self.crew_name = crew_name
+        self.current_roster = current_roster
 
     async def on_submit(self, i: discord.Interaction):
-        await i.response.defer()
-        embed = discord.Embed(title=f"🏴‍☠️ Crew Roster: {self.crew_name.value}", color=discord.Color.gold())
-        embed.add_field(name="👑 Captains / الكباتن", value=self.captains.value or "-", inline=False)
-        if self.vices.value:
-            embed.add_field(name="⚔️ Vice Captains / الفويس كابتن", value=self.vices.value, inline=False)
-        if self.teams_z_y.value:
-            embed.add_field(name="⚡ Teams Z & Y / تيم Z وتيم Y", value=self.teams_z_y.value, inline=False)
-        if self.teams_x_s_a.value:
-            embed.add_field(name="🔥 Teams X, S & A / تيم X وتيم S وتيم A", value=self.teams_x_s_a.value, inline=False)
-        embed.set_footer(text=f"Created by {i.user.display_name}", icon_url=i.user.display_avatar.url)
-        await i.channel.send(content="📜 **New Crew Roster Created!**", embed=embed)
-        await i.followup.send("✅ Crew roster published successfully!", ephemeral=True)
+        updated_roster = f"{self.current_roster}\n• {self.player_info.value}"
+        await i.response.send_message("هل تريد إضافة لاعب آخر؟", view=ContinueCrewView(self.crew_name, updated_roster), ephemeral=True)
 
-@bot.tree.command(name="create-new-crew", description="Create a new crew roster with captains, teams and specs / إنشاء قائمة كرو جديدة")
+
+class ContinueCrewView(discord.ui.View):
+    def __init__(self, crew_name: str, roster: str):
+        super().__init__(timeout=120)
+        self.crew_name = crew_name
+        self.roster = roster
+
+    @discord.ui.button(label="نعم، أضف لاعب آخر", style=discord.ButtonStyle.green, emoji="➕")
+    async def add_more(self, i: discord.Interaction, button: discord.ui.Button):
+        await i.response.send_modal(AddMorePlayerModal(self.crew_name, self.roster))
+
+    @discord.ui.button(label="لا، انتهيت ونشر الكرو", style=discord.ButtonStyle.blurple, emoji="✅")
+    async def finish(self, i: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB) as db:
+            await db.execute("INSERT OR REPLACE INTO guilds_crews(guild_id, crew_name, roster_data) VALUES(?,?,?)",
+                             (i.guild.id, self.crew_name, self.roster))
+            await db.commit()
+            
+        embed = discord.Embed(title=f"🏴‍☠️ Crew Roster: {self.crew_name}", description=self.roster, color=discord.Color.gold())
+        embed.set_footer(text=f"Created by {i.user.display_name}", icon_url=i.user.display_avatar.url)
+        await i.channel.send(content="📜 **New Crew Roster Created Successfully!**", embed=embed)
+        await i.response.edit_message(content="✅ تم حفظ الكرو ونشره بنجاح في الشات!", view=None)
+
+
+class InitialCrewModal(discord.ui.Modal, title="إنشاء كرو جديد (الخطوة الأولى)"):
+    crew_name = discord.ui.TextInput(label="اسم الكرو", placeholder="مثال: Dragon Slayers", required=True)
+    first_player = discord.ui.TextInput(label="أول لاعب (الاسم - التخصص - المنشن)", placeholder="مثال: أحمد - سيف - @Ahmed", required=True)
+
+    async def on_submit(self, i: discord.Interaction):
+        roster = f"• {self.first_player.value}"
+        await i.response.send_message(f"تم تسجيل أول لاعب في كرو **{self.crew_name.value}**.\nهل تريد إضافة لاعب آخر؟", view=ContinueCrewView(self.crew_name.value, roster), ephemeral=True)
+
+@bot.tree.command(name="create-new-crew", description="Create a new crew roster interactively / إنشاء قائمة كرو تفاعلية")
 async def create_new_crew(i: discord.Interaction):
     if not await gate(i, "create-new-crew", editor=True):
         return
-    await i.response.send_modal(CreateCrewModal())
+    await i.response.send_modal(InitialCrewModal())
+
+
+class EditCrewModal(discord.ui.Modal, title="تعديل محتوى الكرو"):
+    new_roster = discord.ui.TextInput(label="التشكيلة الجديدة بالكامل", style=discord.TextStyle.paragraph, placeholder="اكتب التشكيلة الجديدة أو التعديلات هنا...", required=True)
+
+    def __init__(self, crew_name: str):
+        super().__init__()
+        self.crew_name = crew_name
+
+    async def on_submit(self, i: discord.Interaction):
+        async with aiosqlite.connect(DB) as db:
+            await db.execute("UPDATE guilds_crews SET roster_data=? WHERE guild_id=? AND crew_name=?",
+                             (self.new_roster.value, i.guild.id, self.crew_name))
+            await db.commit()
+        await i.response.send_message(f"✅ تم تحديث وتعديل كرو **{self.crew_name}** بنجاح!", ephemeral=True)
+
+@bot.tree.command(name="edit-crew", description="Edit an existing crew roster / تعديل تشكيلة كرو موجودة")
+@app_commands.autocomplete(crew=get_crew_choices)
+async def edit_crew(i: discord.Interaction, crew: str):
+    if not await gate(i, "edit-crew", editor=True):
+        return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT roster_data FROM guilds_crews WHERE guild_id=? AND crew_name=?", (i.guild.id, crew))
+        row = await cur.fetchone()
+    if not row:
+        return await i.response.send_message("❌ هذا الكرو غير موجود.", ephemeral=True)
+    modal = EditCrewModal(crew)
+    modal.new_roster.default = row[0]
+    await i.response.send_modal(modal)
 
 
 # ================================================================ دليل المساعدة الثنائي (Bilingual Help Manual)
@@ -1958,9 +2028,10 @@ def get_help_embeds():
     e2.add_field(name="📢 `/log-update` `[preset]` `(channel)`", value="🇬🇧 Publish formatted bot update notices.\n🇪🇬 نشر إعلانات وتحديثات البوت بتصميم منسق.", inline=False)
     e2.add_field(name="📊 `/inactive` `(days)`", value="🇬🇧 Track inactive members based on log history.\n🇪🇬 تتبع الأعضاء الخاملين بناءً على سجل اللوجات.", inline=False)
     e2.add_field(name="🏆 `/season-reset` `[name]` `[RESET]`", value="🇬🇧 Reset the current season and archive stats.\n🇪🇬 إعادة تصفير الموسم الحالي وأرشفة الإحصائيات.", inline=False)
-    e2.add_field(name="📦 `/backup` `[scope]` `[destination]`", value="🇬🇧 Generate database or settings JSON backups.\n🇪🇬 إنتاج نسخة احتياطية للقاعدة أو الإعدادات.", inline=False)
+    e2.add_field(name="📦 `/backup` `[scope]`", value="🇬🇧 Generate database or settings JSON backups to Owner DM.\n🇪🇬 إنتاج نسخة احتياطية للقاعدة أو الإعدادات وإرسالها لخاص صاحب البوت.", inline=False)
     e2.add_field(name="📥 `/restore-backup` `[backup_file]`", value="🇬🇧 Restore configuration or full database from file.\n🇪🇬 استعادة الإعدادات أو قاعدة البيانات من ملف.", inline=False)
-    e2.add_field(name="🏴‍☠️ `/create-new-crew`", value="🇬🇧 Create custom crew roster with teams and specs.\n🇪🇬 إنشاء لوحة وتشكيلة كرو جديدة بالتيمات.", inline=False)
+    e2.add_field(name="🏴‍☠️ `/create-new-crew`", value="🇬🇧 Create interactive crew roster step by step.\n🇪🇬 إنشاء تشكيلة كرو تفاعلية وإضافة الأعضاء.", inline=False)
+    e2.add_field(name="✏️ `/edit-crew` `[crew]`", value="🇬🇧 Edit an existing crew roster.\n🇪🇬 تعديل تشكيلة كرو موجودة وإضافة/إزالة لاعبين.", inline=False)
 
     e3 = discord.Embed(
         title="⚙️ DragonSlayerBot Manual — Part 3: Server Configuration",
@@ -1989,7 +2060,7 @@ def get_help_embeds():
     e4.add_field(name="👤 `/profile` `(member)`", value="🇬🇧 View member stats and activity profile.\n🇪🇬 عرض بروفايل وإحصائيات العضو.", inline=False)
     e4.add_field(name="💰 `/rates`", value="🇬🇧 Display current point reward rates for logs.\n🇪🇬 عرض جدول أسعار ونقاط اللوجات الحالية.", inline=False)
     e4.add_field(name="🔗 `/link` `[roblox_username]`", value="🇬🇧 Link your Roblox username to your Discord profile.\n🇪🇬 ربط حساب روبلوكس بحسابك في ديسكورد.", inline=False)
-    e4.add_field(name="📈 `/stats` `(crew)`", value="🇬🇧 View general war and fight statistics.\n🇪🇬 عرض إحصائيات الحروبات والقتالات العامة.", inline=False)
+    e4.add_field(name="📈 `/stats` `(crew)`", value="🇬🇧 View general war and fight statistics with crew rosters.\n🇪🇬 عرض إحصائيات الحروب مع خيارات اختيار الطواقم المضافة.", inline=False)
     e4.add_field(name="📚 `/season-top` `[name]`", value="🇬🇧 View leaderboard stats of an archived past season.\n🇪🇬 عرض ليدربورد موسم سابق مؤرشف.", inline=False)
     e4.add_field(name="✏️ `/set-points` `[member]` `[points]`", value="🇬🇧 [Admin] Override and set member points directly.\n🇪🇬 [للإدارة] تعديل نقاط عضو بشكل مباشر.", inline=False)
     e4.add_field(name="🔄 `/sync-ranks` `(member)` `(demote)`", value="🇬🇧 Sync member roles automatically based on their points.\n🇪🇬 مزامنة وتحديث رتب الأعضاء تلقائياً حسب نقاطهم.", inline=False)
@@ -2036,7 +2107,6 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
 
     await i.response.defer(ephemeral=True)
 
-    # 🧹 مسح جميع الرسائل القديمة في القناة تلقائياً قبل إرسال التحديث الجديد
     try:
         await target_channel.purge(limit=100)
     except Exception as e:
@@ -2062,9 +2132,9 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
         await i.followup.send(f"❌ Failed to publish update notice: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="backup", description="Backup tool")
-@app_commands.choices(scope=BACKUP_SCOPE_CHOICES, destination=BACKUP_DEST_CHOICES)
-async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], destination: app_commands.Choice[str]):
+@bot.tree.command(name="backup", description="Backup server data directly to Bot Owner DMs")
+@app_commands.choices(scope=BACKUP_SCOPE_CHOICES)
+async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str]):
     if not await gate(i, "backup", editor=True):
         return
     await i.response.defer(ephemeral=True)
@@ -2078,14 +2148,11 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], de
         file = discord.File(JSON_CONFIG_PATH, filename=f"servers_settings.json")
         msg = "📦 Server Config JSON Backup."
 
-    if destination.value == "owner":
-        ok = await dm_owner(msg, file=file)
-        if ok:
-            await i.followup.send("✅ Backup sent to owner DMs.", ephemeral=True)
-        else:
-            await i.followup.send("❌ Could not DM owner.", ephemeral=True)
+    ok = await dm_owner(msg, file=file)
+    if ok:
+        await i.followup.send("✅ Backup has been sent directly to the Bot Owner's DMs!", ephemeral=True)
     else:
-        await i.followup.send(content=msg, file=file, ephemeral=True)
+        await i.followup.send("❌ Could not DM owner. Please check DM privacy settings.", ephemeral=True)
 
 
 @bot.tree.command(name="restore-backup", description="Read and restore backup file (.json or .db)")
