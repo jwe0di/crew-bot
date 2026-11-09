@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v2.9.5"
+BOT_VERSION = "v2.9.6"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -168,12 +168,12 @@ UPDATE_PRESETS = {
         "label": f"🤖 Bot Hardening Patch {BOT_VERSION}",
         "title_en": f"DragonSlayerBot Release {BOT_VERSION}",
         "title_ar": f"إصدار البوت {BOT_VERSION}",
-        "desc_en": ("• Fixed /help and /send-help-panel commands to display the full manual correctly.\n"
-                    "• Improved Log ID visibility on embeds and review messages.\n"
+        "desc_en": ("• Fixed critical decorator typo (bot.Tree to bot.tree).\n"
+                    "• Fully fixed help command manual panels and log ID visibility.\n"
                     "• Automatic database migration from older versions (no data loss).\n"
                     "• Enhanced command reliability and responsive feedback."),
-        "desc_ar": ("• إصلاح أوامر /help و /send-help-panel لعرض دليل الأوامر كاملاً.\n"
-                    "• تحسين ظهور وإبراز أيدي اللوج (Log ID) بوضوح في الرسائل.\n"
+        "desc_ar": ("• إصلاح خطأ الديكوريتور الحرج (تحويل bot.Tree إلى bot.tree).\n"
+                    "• إصلاح نهائي لقائمة الأوامر ودليل المساعدة وأيدي اللوج.\n"
                     "• ترحيل تلقائي لقاعدة البيانات بدون فقدان أي بيانات.\n"
                     "• تحسين سرعة واستجابة كافة الأوامر واللوجات."),
     }
@@ -817,7 +817,6 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
     if custom_template:
         body = apply_template(custom_template, values)
     else:
-        # إبراز رقم اللوج بوضوح تام في الأعلى والأسفل لسهولة استخدامه في /revoke-log و /resubmit
         header = f"<:emoji_2:1568348048906649652>   **{label}**  <:emoji_2:1568348048906649652>  `🆔 Log #{log_id}`\n\n<a:emoji_6:1568348105781416008>   ●▬▬▬▬▬▬▬▬▬▬▬☭   ☭▬▬▬▬▬▬▬▬▬▬▬●   <a:emoji_6:1568348105781416008>\n\n"
         m = header + f"<a:emoji_15:1568348248522100757>   **Logged by:** <@{author_id}> `[ID: #{log_id}]`\n\n"
         if log_type == "1v1":
@@ -1521,7 +1520,7 @@ async def setrule(i: discord.Interaction, rule_name: app_commands.Choice[str], v
     await i.response.send_message(f"✅ **{rule_name.value}** = {value}", ephemeral=True)
 
 
-@bot.Tree.command(name="settings", description="Show settings")
+@bot.tree.command(name="settings", description="Show settings")
 async def settings_cmd(i: discord.Interaction):
     if not await gate(i, "settings", editor=True):
         return
@@ -1531,7 +1530,7 @@ async def settings_cmd(i: discord.Interaction):
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.Tree.command(name="sync", description="Sync commands")
+@bot.tree.command(name="sync", description="Sync commands")
 async def sync_cmd(i: discord.Interaction):
     if not await gate(i, "sync", editor=True):
         return
@@ -1544,7 +1543,7 @@ async def cmd_name_autocomplete(i: discord.Interaction, current: str) -> List[ap
     return [app_commands.Choice(name=c, value=c) for c in ALL_BOT_COMMANDS if current.lower() in c.lower()][:25]
 
 
-@bot.Tree.command(name="set-cmd-role", description="Lock command to role")
+@bot.tree.command(name="set-cmd-role", description="Lock command to role")
 @app_commands.autocomplete(command=cmd_name_autocomplete)
 async def set_cmd_role(i: discord.Interaction, command: str, role: Optional[discord.Role] = None):
     if not await gate(i, "set-cmd-role", editor=True):
@@ -1558,7 +1557,7 @@ async def set_cmd_role(i: discord.Interaction, command: str, role: Optional[disc
     await i.response.send_message("✅ Updated command permission.", ephemeral=True)
 
 
-@bot.Tree.command(name="set-update-ping", description="Set update ping role")
+@bot.tree.command(name="set-update-ping", description="Set update ping role")
 async def set_update_ping(i: discord.Interaction, role: Optional[discord.Role] = None):
     if not await gate(i, "set-update-ping", editor=True):
         return
@@ -1566,7 +1565,7 @@ async def set_update_ping(i: discord.Interaction, role: Optional[discord.Role] =
     await i.response.send_message("✅ Updated update ping role.", ephemeral=True)
 
 
-@bot.Tree.command(name="set-log-template", description="Customize log layout")
+@bot.tree.command(name="set-log-template", description="Customize log layout")
 @app_commands.choices(log_type=LOG_TYPE_CHOICES[1:])
 async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice[str], template: Optional[app_commands.Range[str, 1, 1200]] = None):
     if not await gate(i, "set-log-template", editor=True):
@@ -1579,7 +1578,7 @@ async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice
     await i.response.send_message("✅ Template updated.", ephemeral=True)
 
 
-@bot.Tree.command(name="set-log-points", description="Set log points")
+@bot.tree.command(name="set-log-points", description="Set log points")
 @app_commands.choices(log=POINT_CHOICES)
 async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], points: app_commands.Range[int, 0, 1000]):
     if not await gate(i, "set-log-points", editor=True):
@@ -1588,7 +1587,7 @@ async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], 
     await i.response.send_message(f"Done. **{log.name}** = {points} points.", ephemeral=True)
 
 
-@bot.Tree.command(name="set-rank-points", description="Set rank points")
+@bot.tree.command(name="set-rank-points", description="Set rank points")
 @app_commands.choices(rank=RANK_CHOICES)
 async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str], points: app_commands.Range[int, 0, 100000]):
     if not await gate(i, "set-rank-points", editor=True):
@@ -1598,7 +1597,7 @@ async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str]
     await i.response.send_message("Done.", ephemeral=True)
 
 
-@bot.Tree.command(name="set-points", description="Set member points")
+@bot.tree.command(name="set-points", description="Set member points")
 async def set_points(i: discord.Interaction, member: discord.Member, points: app_commands.Range[int, 0, 100000]):
     if not await gate(i, "set-points", editor=True):
         return
@@ -1609,14 +1608,14 @@ async def set_points(i: discord.Interaction, member: discord.Member, points: app
     await i.response.send_message("Done.", ephemeral=True)
 
 
-@bot.Tree.command(name="verify-points", description="Verify points")
+@bot.tree.command(name="verify-points", description="Verify points")
 async def verify_points(i: discord.Interaction, fix: bool = False):
     if not await gate(i, "verify-points", editor=True):
         return
     await i.response.send_message("✅ Verified.", ephemeral=True)
 
 
-@bot.Tree.command(name="sync-ranks", description="Sync ranks")
+@bot.tree.command(name="sync-ranks", description="Sync ranks")
 async def sync_ranks(i: discord.Interaction, member: Optional[discord.Member] = None, demote: bool = False):
     if not await gate(i, "sync-ranks", editor=True):
         return
@@ -1624,7 +1623,7 @@ async def sync_ranks(i: discord.Interaction, member: Optional[discord.Member] = 
     await i.response.send_message(f"✅ Ranks synced. Changes: {changed}.", ephemeral=True)
 
 
-@bot.Tree.command(name="points", description="Check points")
+@bot.tree.command(name="points", description="Check points")
 async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = None):
     if not await gate(i, "points"):
         return
@@ -1636,7 +1635,7 @@ async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = 
     await i.response.send_message(f"{member.mention}: **{total}** points.", allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.Tree.command(name="leaderboard", description="Leaderboard")
+@bot.tree.command(name="leaderboard", description="Leaderboard")
 @app_commands.choices(period=PERIOD_CHOICES)
 async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choice[str]] = None):
     if not await gate(i, "leaderboard"):
@@ -1650,21 +1649,21 @@ async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choi
     await i.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.Tree.command(name="rates", description="Show rates")
+@bot.tree.command(name="rates", description="Show rates")
 async def rates(i: discord.Interaction):
     if not await gate(i, "rates"):
         return
     await i.response.send_message("Rates info.", ephemeral=True)
 
 
-@bot.Tree.command(name="link", description="Link Roblox")
+@bot.tree.command(name="link", description="Link Roblox")
 async def link(i: discord.Interaction, roblox_username: str):
     if not await gate(i, "link"):
         return
     await i.response.send_message("Linked successfully.", ephemeral=True)
 
 
-@bot.Tree.command(name="profile", description="Member profile")
+@bot.tree.command(name="profile", description="Member profile")
 async def profile(i: discord.Interaction, member: Optional[discord.Member] = None):
     if not await gate(i, "profile"):
         return
@@ -1672,21 +1671,21 @@ async def profile(i: discord.Interaction, member: Optional[discord.Member] = Non
     await i.response.send_message(f"Profile for {member.display_name}", ephemeral=True)
 
 
-@bot.Tree.command(name="stats", description="War stats")
+@bot.tree.command(name="stats", description="War stats")
 async def stats(i: discord.Interaction, crew: Optional[str] = None):
     if not await gate(i, "stats"):
         return
     await i.response.send_message("Stats info.", ephemeral=True)
 
 
-@bot.Tree.command(name="inactive", description="Inactive members")
+@bot.tree.command(name="inactive", description="Inactive members")
 async def inactive(i: discord.Interaction, days: int = 30):
     if not await gate(i, "inactive", editor=True):
         return
     await i.response.send_message("Inactive list generated.", ephemeral=True)
 
 
-@bot.Tree.command(name="season-reset", description="Reset season")
+@bot.tree.command(name="season-reset", description="Reset season")
 async def season_reset(i: discord.Interaction, name: str, confirm: str, reset_ranks: bool = False):
     if not await gate(i, "season-reset", editor=True):
         return
@@ -1695,14 +1694,14 @@ async def season_reset(i: discord.Interaction, name: str, confirm: str, reset_ra
     await i.response.send_message("Season reset successfully.", ephemeral=True)
 
 
-@bot.Tree.command(name="season-top", description="Archived season top")
+@bot.tree.command(name="season-top", description="Archived season top")
 async def season_top(i: discord.Interaction, name: str):
     if not await gate(i, "season-top"):
         return
     await i.response.send_message("Season archive top.", ephemeral=True)
 
 
-# ================================================================ إصلاح أمر المساعدة (Help & Panel)
+# ================================================================ أمر المساعدة (Help & Panel)
 def get_help_embeds():
     embed = discord.Embed(
         title=f"⚔️ DragonSlayerBot — Manual ({BOT_VERSION})", 
