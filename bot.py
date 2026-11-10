@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v3.0.0"
+BOT_VERSION = "v3.1.0"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -182,7 +182,6 @@ TRANSLATIONS = {
     }
 }
 
-# نصوص الأوامر للدليل حسب اللغة
 HELP_COMMANDS = {
     "en": {
         "log-war": "Log a Crew War battle (min 2 attachments).",
@@ -263,6 +262,126 @@ HELP_COMMANDS = {
         "sync": "مزامنة أوامر البوت مع ديسكورد.",
         "help": "عرض دليل الأوامر الشامل.",
         "send-help-panel": "إرسال بانل دليل الأوامر إلى قناة محددة.",
+    },
+    "de": {
+        "log-war": "Crew-Krieg Kampf protokollieren.",
+        "log-1v1": "1v1 Duell protokollieren.",
+        "log-2v2": "2v2 Teamkampf protokollieren.",
+        "log-training": "Training protokollieren.",
+        "log-tryout": "Probetraining protokollieren.",
+        "resubmit": "Abgelehntes Log erneut einreichen.",
+        "pending": "Ausstehende Logs anzeigen.",
+        "revoke-log": "Akzeptiertes Log widerrufen.",
+        "log-update": "Bot-Update ankündigen.",
+        "inactive": "Inaktive Mitglieder verfolgen.",
+        "season-reset": "Saison zurücksetzen.",
+        "backup": "Backup erstellen.",
+        "restore-backup": "Backup wiederherstellen.",
+        "create-new-crew": "Crew erstellen.",
+        "edit-crew": "Crew bearbeiten.",
+        "setchannel": "Kanäle einstellen.",
+        "setping": "Pings einstellen.",
+        "setroles": "Rollenberechtigungen einstellen.",
+        "setrule": "Regeln konfigurieren.",
+        "set-log-points": "Punkte für Logs einstellen.",
+        "set-rank-points": "Rangpunkte einstellen.",
+        "set-log-template": "Log-Template anpassen.",
+        "set-cmd-role": "Befehlsrolle sperren.",
+        "set-update-ping": "Update-Ping-Rolle setzen.",
+        "points": "Punkte überprüfen.",
+        "leaderboard": "Bestenliste anzeigen.",
+        "profile": "Profil anzeigen.",
+        "rates": "Belohnungsraten anzeigen.",
+        "link": "Roblox-Konto verknüpfen.",
+        "stats": "Statistiken anzeigen.",
+        "season-top": "Archivierte Bestenliste anzeigen.",
+        "set-points": "Mitgliederpunkte direkt setzen.",
+        "sync-ranks": "Ränge synchronisieren.",
+        "language": "Bevorzugte Sprache wählen.",
+        "settings": "Server-Einstellungen anzeigen.",
+        "sync": "Befehle synchronisieren.",
+        "help": "Handbuch anzeigen.",
+        "send-help-panel": "Handbuch-Panel senden.",
+    },
+    "it": {
+        "log-war": "Registra guerra tra crew.",
+        "log-1v1": "Registra duello 1v1.",
+        "log-2v2": "Registra scontro 2v2.",
+        "log-training": "Registra allenamento.",
+        "log-tryout": "Registra provino.",
+        "resubmit": "Riinvia log rifiutato.",
+        "pending": "Mostra log in attesa.",
+        "revoke-log": "Revoca log accettato.",
+        "log-update": "Pubblica aggiornamento bot.",
+        "inactive": "Traccia membri inattivi.",
+        "season-reset": "Ripristina stagione.",
+        "backup": "Crea backup.",
+        "restore-backup": "Ripristina backup.",
+        "create-new-crew": "Crea crew.",
+        "edit-crew": "Modifica crew.",
+        "setchannel": "Imposta canali.",
+        "setping": "Imposta ping.",
+        "setroles": "Imposta ruoli.",
+        "setrule": "Configura regole.",
+        "set-log-points": "Imposta punti log.",
+        "set-rank-points": "Imposta punti rango.",
+        "set-log-template": "Personalizza template log.",
+        "set-cmd-role": "Blocca ruolo comando.",
+        "set-update-ping": "Imposta ping aggiornamento.",
+        "points": "Controlla punti.",
+        "leaderboard": "Visualizza classifica.",
+        "profile": "Visualizza profilo.",
+        "rates": "Visualizza tassi punti.",
+        "link": "Collega account Roblox.",
+        "stats": "Visualizza statistiche.",
+        "season-top": "Visualizza classifica archiviata.",
+        "set-points": "Imposta punti membro.",
+        "sync-ranks": "Sincronizza ranghi.",
+        "language": "Scegli la lingua del bot.",
+        "settings": "Mostra impostazioni server.",
+        "sync": "Sincronizza comandi.",
+        "help": "Mostra manuale.",
+        "send-help-panel": "Invia pannello manuale.",
+    },
+    "hi": {
+        "log-war": "क्रू वार लॉग करें।",
+        "log-1v1": "1v1 द्वंद्व युद्ध लॉग करें।",
+        "log-2v2": "2v2 टीम युद्ध लॉग करें।",
+        "log-training": "प्रशिक्षण सत्र लॉग करें।",
+        "log-tryout": "ट्रायout परीक्षण लॉग करें।",
+        "resubmit": "अस्वीकृत लॉग पुनः सबमिट करें।",
+        "pending": "लंबित लॉग की सूची देखें।",
+        "revoke-log": "स्वीकृत लॉग रद्द करें।",
+        "log-update": "बॉट अपडेट सूचना प्रकाशित करें।",
+        "inactive": "निष्क्रिय सदस्यों को ट्रैक करें।",
+        "season-reset": "सीज़न रीसेट करें।",
+        "backup": "डेटाबेस बैकअप बनाएं।",
+        "restore-backup": "बैकअप पुनर्स्थापित करें।",
+        "create-new-crew": "क्रू रोस्टर बनाएं।",
+        "edit-crew": "क्रू रोस्टर संपादित करें।",
+        "setchannel": "चैनल सेट करें।",
+        "setping": "पिंग भूमिकाएं सेट करें।",
+        "setroles": "भूमिका अनुमति सेट करें।",
+        "setrule": "नियम कॉन्फ़िगर करें।",
+        "set-log-points": "लॉग अंक सेट करें।",
+        "set-rank-points": "रैंक अंक सेट करें।",
+        "set-log-template": "लॉग टेम्पलेट कस्टमाइज़ करें।",
+        "set-cmd-role": "कमांड भूमिका लॉक करें।",
+        "set-update-ping": "अपडेट पिंग सेट करें।",
+        "points": "अंक जांचें।",
+        "leaderboard": "लीडरबोर्ड देखें।",
+        "profile": "प्रोफ़ाइल देखें।",
+        "rates": "अंक दरें देखें।",
+        "link": "रोблоक्स खाता लिंक करें।",
+        "stats": "आंकड़े देखें।",
+        "season-top": "संग्रहीत सीज़न लीडरबोर्ड देखें।",
+        "set-points": "सदस्य अंक सीधे सेट करें।",
+        "sync-ranks": "रैंक सिंक करें।",
+        "language": "पसंदीदा भाषा चुनें।",
+        "settings": "सर्वर सेटिंग्स देखें।",
+        "sync": "कमांड सिंक करें।",
+        "help": "निर्देशिका दिखाएं।",
+        "send-help-panel": "सहायता पैनल भेजें.",
     }
 }
 
@@ -1023,7 +1142,7 @@ async def on_app_command_error(i: discord.Interaction, error):
     await report_error(i, error)
 
 
-# ================================================================ القوالب والرسوم (تستثنى من الترجمات بطلبك)
+# ================================================================ القوالب والرسوم (مستثناة من الترجمات بناءً على طلبك)
 MSG_LIMIT = 1900
 
 
@@ -1033,8 +1152,8 @@ def clip(v, n=350):
 
 
 async def get_custom_template(guild_id, log_type):
-    t = await raw_setting(guild_id, f"template:{log_type}")
-    return t or None
+    t_val = await raw_setting(guild_id, f"template:{log_type}")
+    return t_val or None
 
 
 def apply_template(template: str, values: dict) -> str:
@@ -1565,7 +1684,7 @@ async def youtube_extra(i: discord.Interaction, youtube_link: Optional[str], ext
     return True
 
 
-@bot.tree.command(name="log-war", description="Log a Crew War")
+@bot.tree.command(name="log-war", description="Log a Crew War battle")
 @app_commands.choices(result=RESULT_CHOICES)
 @app_commands.describe(result="Win or Loss", file1="File 1", file2="File 2", file3="File 3", youtube_link="YouTube link",
                        player1="Teammate 1", player2="Teammate 2", player3="Teammate 3", player4="Teammate 4")
@@ -1726,7 +1845,7 @@ async def pending(i: discord.Interaction):
         rows = await cur.fetchall()
     if not rows:
         return await i.response.send_message(t(lang, "no_pending_logs"), ephemeral=True)
-    lines = [f"**#{lid}** {LOG_TYPES.get(t, {}).get('label', t)} — <@{author}> — {str(created)[:16]}" for lid, t, author, created, _, _ in rows]
+    lines = [f"**#{lid}** {LOG_TYPES.get(t_type, {}).get('label', t_type)} — <@{author}> — {str(created)[:16]}" for lid, t_type, author, created, _, _ in rows]
     await i.response.send_message("\n".join(lines)[:1990], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -1736,10 +1855,10 @@ async def setchannel(i: discord.Interaction, log_type: app_commands.Choice[str],
                      channel: Optional[discord.TextChannel] = None):
     if not await gate(i, "setchannel", editor=True):
         return
-    t = "all" if kind.value == "audit_channel" else log_type.value
-    await cfg_set(i.guild.id, t, kind.value, channel.id if channel else None)
-    await audit(f"⚙️ {i.user.mention} set {kind.value} ({t}) to {channel.mention if channel else 'none'}", i.guild)
-    await i.response.send_message(f"✅ **{kind.name}** ({t}) = {channel.mention if channel else 'Cleared'}", ephemeral=True)
+    t_val = "all" if kind.value == "audit_channel" else log_type.value
+    await cfg_set(i.guild.id, t_val, kind.value, channel.id if channel else None)
+    await audit(f"⚙️ {i.user.mention} set {kind.value} ({t_val}) to {channel.mention if channel else 'none'}", i.guild)
+    await i.response.send_message(f"✅ **{kind.name}** ({t_val}) = {channel.mention if channel else 'Cleared'}", ephemeral=True)
 
 
 @bot.tree.command(name="setping", description="Set ping roles")
@@ -2193,13 +2312,13 @@ async def edit_crew(i: discord.Interaction, crew: str):
     await i.response.send_modal(modal)
 
 
-# ================================================================ دليل المساعدة التفاعلي بحسب اللغة المختارة
+# ================================================================ دليل المساعدة التفاعلي بحسب اللغة المختارة (علم الدولة المطلوبة)
 def get_help_embeds_for_lang(lang: str = "en"):
     flag = SUPPORTED_LANGUAGES.get(lang, {}).get("flag", "🌐")
     cmd_dict = HELP_COMMANDS.get(lang, HELP_COMMANDS["en"])
 
     e1 = discord.Embed(
-        title=f"⚔️ DragonSlayerBot Manual ({BOT_VERSION}) {flag} — {t(lang, 'part1_title')}",
+        title=f"⚔️ {t(lang, 'help_title')} ({BOT_VERSION}) {flag} — {t(lang, 'part1_title')}",
         description="●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.gold()
     )
@@ -2211,7 +2330,7 @@ def get_help_embeds_for_lang(lang: str = "en"):
     e1.add_field(name="🔄 `/resubmit` `[log_id]`", value=cmd_dict.get("resubmit", ""), inline=False)
 
     e2 = discord.Embed(
-        title=f"🛡️ DragonSlayerBot Manual {flag} — {t(lang, 'part2_title')}",
+        title=f"🛡️ {t(lang, 'help_title')} {flag} — {t(lang, 'part2_title')}",
         description="●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.blue()
     )
@@ -2226,7 +2345,7 @@ def get_help_embeds_for_lang(lang: str = "en"):
     e2.add_field(name="✏️ `/edit-crew` `[crew]`", value=cmd_dict.get("edit-crew", ""), inline=False)
 
     e3 = discord.Embed(
-        title=f"⚙️ DragonSlayerBot Manual {flag} — {t(lang, 'part3_title')}",
+        title=f"⚙️ {t(lang, 'help_title')} {flag} — {t(lang, 'part3_title')}",
         description="●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.green()
     )
@@ -2241,7 +2360,7 @@ def get_help_embeds_for_lang(lang: str = "en"):
     e3.add_field(name="📌 `/set-update-ping` `(role)`", value=cmd_dict.get("set-update-ping", ""), inline=False)
 
     e4 = discord.Embed(
-        title=f"📊 DragonSlayerBot Manual {flag} — {t(lang, 'part4_title')}",
+        title=f"📊 {t(lang, 'help_title')} {flag} — {t(lang, 'part4_title')}",
         description="●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●",
         color=discord.Color.purple()
     )
