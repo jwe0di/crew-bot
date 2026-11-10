@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v3.1.0"
+BOT_VERSION = "v3.2.0"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -1684,10 +1684,18 @@ async def youtube_extra(i: discord.Interaction, youtube_link: Optional[str], ext
     return True
 
 
-@bot.tree.command(name="log-war", description="Log a Crew War battle")
+# ================================================================ الأوامر مع دعم الترجمة الفورية للوصف (Localizations)
+@bot.tree.command(
+    name="log-war",
+    description="Log a Crew War battle",
+    description_localizations={
+        discord.Locale.arabic: "تسجيل حرب كرو",
+        discord.Locale.german: "Crew-Krieg Kampf protokollieren",
+        discord.Locale.italian: "Registra guerra tra crew",
+        discord.Locale.hindi: "क्रू वार लॉग करें"
+    }
+)
 @app_commands.choices(result=RESULT_CHOICES)
-@app_commands.describe(result="Win or Loss", file1="File 1", file2="File 2", file3="File 3", youtube_link="YouTube link",
-                       player1="Teammate 1", player2="Teammate 2", player3="Teammate 3", player4="Teammate 4")
 async def log_war(i: discord.Interaction, result: app_commands.Choice[str],
                   file1: discord.Attachment, file2: discord.Attachment,
                   file3: Optional[discord.Attachment] = None, youtube_link: Optional[str] = None,
@@ -1700,9 +1708,17 @@ async def log_war(i: discord.Interaction, result: app_commands.Choice[str],
     await start_log(i, "war", result.value, [file1, file2, file3], extra)
 
 
-@bot.tree.command(name="log-1v1", description="Log a 1v1 fight")
+@bot.tree.command(
+    name="log-1v1",
+    description="Log a 1v1 fight",
+    description_localizations={
+        discord.Locale.arabic: "تسجيل قتال فردي 1 ضد 1",
+        discord.Locale.german: "1v1 Duell protokollieren",
+        discord.Locale.italian: "Registra duello 1v1",
+        discord.Locale.hindi: "1v1 द्वंद्व युद्ध लॉग करें"
+    }
+)
 @app_commands.choices(result=RESULT_CHOICES)
-@app_commands.describe(result="Win or Loss", proof1="Proof 1", proof2="Proof 2", youtube_link="YouTube link")
 async def log_1v1(i: discord.Interaction, result: app_commands.Choice[str], proof1: discord.Attachment,
                   proof2: Optional[discord.Attachment] = None, youtube_link: Optional[str] = None):
     extra = {}
@@ -1711,9 +1727,17 @@ async def log_1v1(i: discord.Interaction, result: app_commands.Choice[str], proo
     await start_log(i, "1v1", result.value, [proof1, proof2], extra)
 
 
-@bot.tree.command(name="log-2v2", description="Log a 2v2 fight")
+@bot.tree.command(
+    name="log-2v2",
+    description="Log a 2v2 fight",
+    description_localizations={
+        discord.Locale.arabic: "تسجيل قتال ثنائي 2 ضد 2",
+        discord.Locale.german: "2v2 Teamkampf protokollieren",
+        discord.Locale.italian: "Registra scontro 2v2",
+        discord.Locale.hindi: "2v2 टीम युद्ध लॉग करें"
+    }
+)
 @app_commands.choices(result=RESULT_CHOICES)
-@app_commands.describe(result="Win or Loss", proof1="Proof 1", proof2="Proof 2", youtube_link="YouTube link", teammate="Teammate")
 async def log_2v2(i: discord.Interaction, result: app_commands.Choice[str], proof1: discord.Attachment,
                   proof2: Optional[discord.Attachment] = None, youtube_link: Optional[str] = None,
                   teammate: Optional[discord.Member] = None):
@@ -1724,15 +1748,31 @@ async def log_2v2(i: discord.Interaction, result: app_commands.Choice[str], proo
     await start_log(i, "2v2", result.value, [proof1, proof2], extra)
 
 
-@bot.tree.command(name="log-training", description="Log training session")
-@app_commands.describe(proof1="Proof 1", proof2="Proof 2")
+@bot.tree.command(
+    name="log-training",
+    description="Log training session",
+    description_localizations={
+        discord.Locale.arabic: "تسجيل تدريب للكرو",
+        discord.Locale.german: "Training protokollieren",
+        discord.Locale.italian: "Registra allenamento",
+        discord.Locale.hindi: "प्रशिक्षण सत्र लॉग करें"
+    }
+)
 async def log_training(i: discord.Interaction, proof1: discord.Attachment, proof2: Optional[discord.Attachment] = None):
     await start_log(i, "training", None, [proof1, proof2])
 
 
-@bot.tree.command(name="log-tryout", description="Log a tryout session")
+@bot.tree.command(
+    name="log-tryout",
+    description="Log a tryout session",
+    description_localizations={
+        discord.Locale.arabic: "تسجيل اختبار قبول Tryout",
+        discord.Locale.german: "Probetraining protokollieren",
+        discord.Locale.italian: "Registra provino",
+        discord.Locale.hindi: "ट्रायout परीक्षण लॉग करें"
+    }
+)
 @app_commands.choices(result=TRYOUT_CHOICES)
-@app_commands.describe(candidate="Candidate", result="Passed/Failed", proof="Proof")
 async def log_tryout(i: discord.Interaction, candidate: discord.Member, result: app_commands.Choice[str],
                      proof: discord.Attachment):
     if candidate.bot or candidate.id == i.user.id:
@@ -1741,7 +1781,16 @@ async def log_tryout(i: discord.Interaction, candidate: discord.Member, result: 
     await start_log(i, "tryout", result.value, [proof], extra)
 
 
-@bot.tree.command(name="resubmit", description="Resubmit a rejected log")
+@bot.tree.command(
+    name="resubmit",
+    description="Resubmit a rejected log",
+    description_localizations={
+        discord.Locale.arabic: "إعادة تقديم لوج مرفوض",
+        discord.Locale.german: "Abgelehntes Log erneut einreichen",
+        discord.Locale.italian: "Riinvia log rifiutato",
+        discord.Locale.hindi: "अस्वीकृत लॉग पुनः सबमिट करें"
+    }
+)
 async def resubmit(i: discord.Interaction, log_id: int):
     lang = await get_user_lang(i.user.id)
     if not i.guild or not isinstance(i.user, discord.Member):
@@ -1776,7 +1825,16 @@ async def resubmit(i: discord.Interaction, log_id: int):
     await i.response.send_modal(LogModal(row["type"], row["result"], files, extra, defaults=data, parent_id=log_id))
 
 
-@bot.tree.command(name="revoke-log", description="Cancel an accepted log")
+@bot.tree.command(
+    name="revoke-log",
+    description="Cancel an accepted log",
+    description_localizations={
+        discord.Locale.arabic: "إلغاء لوج مقبول",
+        discord.Locale.german: "Akzeptiertes Log widerrufen",
+        discord.Locale.italian: "Revoca log accettato",
+        discord.Locale.hindi: "स्वीकृत लॉग रद्द करें"
+    }
+)
 async def revoke_log(i: discord.Interaction, log_id: int, reason: app_commands.Range[str, 1, 300]):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "revoke-log"):
@@ -1831,7 +1889,16 @@ async def revoke_log(i: discord.Interaction, log_id: int, reason: app_commands.R
     await i.followup.send(t(lang, "revoked_success", log_id=log_id), ephemeral=True)
 
 
-@bot.tree.command(name="pending", description="List pending logs")
+@bot.tree.command(
+    name="pending",
+    description="List pending logs",
+    description_localizations={
+        discord.Locale.arabic: "عرض اللوجات المعلقة",
+        discord.Locale.german: "Ausstehende Logs anzeigen",
+        discord.Locale.italian: "Mostra log in attesa",
+        discord.Locale.hindi: "लंबित लॉग की सूची देखें"
+    }
+)
 async def pending(i: discord.Interaction):
     lang = await get_user_lang(i.user.id)
     if not await check_cmd_perm(i, "pending"):
@@ -1849,7 +1916,16 @@ async def pending(i: discord.Interaction):
     await i.response.send_message("\n".join(lines)[:1990], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.tree.command(name="setchannel", description="Set channels")
+@bot.tree.command(
+    name="setchannel",
+    description="Set channels",
+    description_localizations={
+        discord.Locale.arabic: "تعيين قنوات البوت",
+        discord.Locale.german: "Kanäle einstellen",
+        discord.Locale.italian: "Imposta canali",
+        discord.Locale.hindi: "चैनल सेट करें"
+    }
+)
 @app_commands.choices(log_type=LOG_TYPE_CHOICES, kind=KIND_CHANNEL)
 async def setchannel(i: discord.Interaction, log_type: app_commands.Choice[str], kind: app_commands.Choice[str],
                      channel: Optional[discord.TextChannel] = None):
@@ -1861,7 +1937,16 @@ async def setchannel(i: discord.Interaction, log_type: app_commands.Choice[str],
     await i.response.send_message(f"✅ **{kind.name}** ({t_val}) = {channel.mention if channel else 'Cleared'}", ephemeral=True)
 
 
-@bot.tree.command(name="setping", description="Set ping roles")
+@bot.tree.command(
+    name="setping",
+    description="Set ping roles",
+    description_localizations={
+        discord.Locale.arabic: "تعيين رتب المنشن",
+        discord.Locale.german: "Pings einstellen",
+        discord.Locale.italian: "Imposta ping",
+        discord.Locale.hindi: "पिंग भूमिकाएं सेट करें"
+    }
+)
 @app_commands.choices(log_type=LOG_TYPE_CHOICES, kind=KIND_PING)
 async def setping(i: discord.Interaction, log_type: app_commands.Choice[str], kind: app_commands.Choice[str],
                   role: Optional[discord.Role] = None):
@@ -1872,7 +1957,16 @@ async def setping(i: discord.Interaction, log_type: app_commands.Choice[str], ki
     await i.response.send_message(f"✅ **{kind.name}** = {role.mention if role else 'Cleared'}", ephemeral=True)
 
 
-@bot.tree.command(name="setroles", description="Set role permissions")
+@bot.tree.command(
+    name="setroles",
+    description="Set role permissions",
+    description_localizations={
+        discord.Locale.arabic: "تعيين صلاحيات الرتب",
+        discord.Locale.german: "Rollenberechtigungen einstellen",
+        discord.Locale.italian: "Imposta ruoli",
+        discord.Locale.hindi: "भूमिका अनुमति सेट करें"
+    }
+)
 @app_commands.choices(kind=KIND_ROLES, log_type=LOG_TYPE_CHOICES, action=ACTIONS)
 async def setroles(i: discord.Interaction, kind: app_commands.Choice[str], log_type: app_commands.Choice[str],
                    action: app_commands.Choice[str], role: discord.Role):
@@ -1883,7 +1977,16 @@ async def setroles(i: discord.Interaction, kind: app_commands.Choice[str], log_t
     await i.response.send_message(f"✅ {action.name}: {role.mention} → **{kind.name}**.", ephemeral=True)
 
 
-@bot.tree.command(name="setrule", description="Change server rule")
+@bot.tree.command(
+    name="setrule",
+    description="Change server rule",
+    description_localizations={
+        discord.Locale.arabic: "تعديل قواعد السيرفر",
+        discord.Locale.german: "Regeln konfigurieren",
+        discord.Locale.italian: "Configura regole",
+        discord.Locale.hindi: "नियम कॉन्फ़िगर करें"
+    }
+)
 @app_commands.choices(rule_name=RULE_CHOICES)
 async def setrule(i: discord.Interaction, rule_name: app_commands.Choice[str], value: app_commands.Range[int, 0, 1000]):
     if not await gate(i, "setrule", editor=True):
@@ -1893,7 +1996,16 @@ async def setrule(i: discord.Interaction, rule_name: app_commands.Choice[str], v
     await i.response.send_message(f"✅ **{rule_name.value}** = {value}", ephemeral=True)
 
 
-@bot.tree.command(name="settings", description="Show settings")
+@bot.tree.command(
+    name="settings",
+    description="Show settings",
+    description_localizations={
+        discord.Locale.arabic: "عرض إعدادات السيرفر",
+        discord.Locale.german: "Server-Einstellungen anzeigen",
+        discord.Locale.italian: "Mostra impostazioni server",
+        discord.Locale.hindi: "सर्वर सेटिंग्स देखें"
+    }
+)
 async def settings_cmd(i: discord.Interaction):
     if not await gate(i, "settings", editor=True):
         return
@@ -1903,7 +2015,16 @@ async def settings_cmd(i: discord.Interaction):
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="sync", description="Sync commands")
+@bot.tree.command(
+    name="sync",
+    description="Sync commands",
+    description_localizations={
+        discord.Locale.arabic: "مزامنة الأوامر",
+        discord.Locale.german: "Befehle synchronisieren",
+        discord.Locale.italian: "Sincronizza comandi",
+        discord.Locale.hindi: "कमांड सिंक करें"
+    }
+)
 async def sync_cmd(i: discord.Interaction):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "sync", editor=True):
@@ -1917,7 +2038,16 @@ async def cmd_name_autocomplete(i: discord.Interaction, current: str) -> List[ap
     return [app_commands.Choice(name=c, value=c) for c in ALL_BOT_COMMANDS if current.lower() in c.lower()][:25]
 
 
-@bot.tree.command(name="set-cmd-role", description="Lock command to role")
+@bot.tree.command(
+    name="set-cmd-role",
+    description="Lock command to role",
+    description_localizations={
+        discord.Locale.arabic: "تقييد أمر برتبة",
+        discord.Locale.german: "Befehlsrolle sperren",
+        discord.Locale.italian: "Blocca ruolo comando",
+        discord.Locale.hindi: "कमांड भूमिका लॉक करें"
+    }
+)
 @app_commands.autocomplete(command=cmd_name_autocomplete)
 async def set_cmd_role(i: discord.Interaction, command: str, role: Optional[discord.Role] = None):
     lang = await get_user_lang(i.user.id)
@@ -1932,7 +2062,16 @@ async def set_cmd_role(i: discord.Interaction, command: str, role: Optional[disc
     await i.response.send_message(t(lang, "cmd_perm_updated"), ephemeral=True)
 
 
-@bot.tree.command(name="set-update-ping", description="Set update ping role")
+@bot.tree.command(
+    name="set-update-ping",
+    description="Set update ping role",
+    description_localizations={
+        discord.Locale.arabic: "تعيين رتبة منشن التحديثات",
+        discord.Locale.german: "Update-Ping-Rolle setzen",
+        discord.Locale.italian: "Imposta ping aggiornamento",
+        discord.Locale.hindi: "अपडेट पिंग सेट करें"
+    }
+)
 async def set_update_ping(i: discord.Interaction, role: Optional[discord.Role] = None):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "set-update-ping", editor=True):
@@ -1941,7 +2080,16 @@ async def set_update_ping(i: discord.Interaction, role: Optional[discord.Role] =
     await i.response.send_message(t(lang, "update_ping_updated"), ephemeral=True)
 
 
-@bot.tree.command(name="set-log-template", description="Customize log layout")
+@bot.tree.command(
+    name="set-log-template",
+    description="Customize log layout",
+    description_localizations={
+        discord.Locale.arabic: "تخصيص قالب اللوجات",
+        discord.Locale.german: "Log-Template anpassen",
+        discord.Locale.italian: "Personalizza template log",
+        discord.Locale.hindi: "लॉग टेम्पलेट कस्टमाइज़ करें"
+    }
+)
 @app_commands.choices(log_type=LOG_TYPE_CHOICES[1:])
 async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice[str], template: Optional[app_commands.Range[str, 1, 1200]] = None):
     lang = await get_user_lang(i.user.id)
@@ -1955,7 +2103,16 @@ async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice
     await i.response.send_message(t(lang, "tmpl_updated"), ephemeral=True)
 
 
-@bot.tree.command(name="set-log-points", description="Set log points")
+@bot.tree.command(
+    name="set-log-points",
+    description="Set log points",
+    description_localizations={
+        discord.Locale.arabic: "تحديد نقاط اللوجات",
+        discord.Locale.german: "Punkte für Logs einstellen",
+        discord.Locale.italian: "Imposta punti log",
+        discord.Locale.hindi: "लॉग अंक सेट करें"
+    }
+)
 @app_commands.choices(log=POINT_CHOICES)
 async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], points: app_commands.Range[int, 0, 1000]):
     lang = await get_user_lang(i.user.id)
@@ -1965,7 +2122,16 @@ async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], 
     await i.response.send_message(t(lang, "pts_updated", name=log.name, pts=points), ephemeral=True)
 
 
-@bot.tree.command(name="set-rank-points", description="Set rank points")
+@bot.tree.command(
+    name="set-rank-points",
+    description="Set rank points",
+    description_localizations={
+        discord.Locale.arabic: "تحديد نقاط الرتب",
+        discord.Locale.german: "Rangpunkte einstellen",
+        discord.Locale.italian: "Imposta punti rango",
+        discord.Locale.hindi: "रैंक अंक सेट करें"
+    }
+)
 @app_commands.choices(rank=RANK_CHOICES)
 async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str], points: app_commands.Range[int, 0, 100000]):
     lang = await get_user_lang(i.user.id)
@@ -1976,7 +2142,16 @@ async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str]
     await i.response.send_message(t(lang, "rank_pts_updated"), ephemeral=True)
 
 
-@bot.tree.command(name="set-points", description="Set member points")
+@bot.tree.command(
+    name="set-points",
+    description="Set member points",
+    description_localizations={
+        discord.Locale.arabic: "تعيين نقاط عضو",
+        discord.Locale.german: "Mitgliederpunkte direkt setzen",
+        discord.Locale.italian: "Imposta punti membro",
+        discord.Locale.hindi: "सदस्य अंक सीधे सेट करें"
+    }
+)
 async def set_points(i: discord.Interaction, member: discord.Member, points: app_commands.Range[int, 0, 100000]):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "set-points", editor=True):
@@ -1988,7 +2163,16 @@ async def set_points(i: discord.Interaction, member: discord.Member, points: app
     await i.response.send_message(t(lang, "member_pts_set"), ephemeral=True)
 
 
-@bot.tree.command(name="verify-points", description="Verify points")
+@bot.tree.command(
+    name="verify-points",
+    description="Verify points",
+    description_localizations={
+        discord.Locale.arabic: "التحقق من نقاط الأعضاء",
+        discord.Locale.german: "Punkte überprüfen",
+        discord.Locale.italian: "Verifica punti",
+        discord.Locale.hindi: "अंक सत्यापित करें"
+    }
+)
 async def verify_points(i: discord.Interaction, fix: bool = False):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "verify-points", editor=True):
@@ -2013,7 +2197,16 @@ async def verify_points(i: discord.Interaction, fix: bool = False):
     await i.followup.send(msg, ephemeral=True)
 
 
-@bot.tree.command(name="sync-ranks", description="Sync ranks")
+@bot.tree.command(
+    name="sync-ranks",
+    description="Sync ranks",
+    description_localizations={
+        discord.Locale.arabic: "مزامنة رتب الأعضاء",
+        discord.Locale.german: "Ränge synchronisieren",
+        discord.Locale.italian: "Sincronizza ranghi",
+        discord.Locale.hindi: "رैंक सिंक करें"
+    }
+)
 async def sync_ranks(i: discord.Interaction, member: Optional[discord.Member] = None, demote: bool = False):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "sync-ranks", editor=True):
@@ -2022,7 +2215,16 @@ async def sync_ranks(i: discord.Interaction, member: Optional[discord.Member] = 
     await i.response.send_message(t(lang, "ranks_synced", changed=changed), ephemeral=True)
 
 
-@bot.tree.command(name="points", description="Check points")
+@bot.tree.command(
+    name="points",
+    description="Check points",
+    description_localizations={
+        discord.Locale.arabic: "عرض نقاطك أو نقاط عضو",
+        discord.Locale.german: "Punkte überprüfen",
+        discord.Locale.italian: "Controlla punti",
+        discord.Locale.hindi: "अंक जांचें"
+    }
+)
 async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = None):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "points"):
@@ -2035,7 +2237,16 @@ async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = 
     await i.response.send_message(t(lang, "user_points", mention=member.mention, total=total), allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.tree.command(name="leaderboard", description="Leaderboard")
+@bot.tree.command(
+    name="leaderboard",
+    description="Leaderboard",
+    description_localizations={
+        discord.Locale.arabic: "لوحة المتصدرين",
+        discord.Locale.german: "Bestenliste anzeigen",
+        discord.Locale.italian: "Visualizza classifica",
+        discord.Locale.hindi: "लीडरबोर्ड देखें"
+    }
+)
 @app_commands.choices(period=PERIOD_CHOICES)
 async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choice[str]] = None):
     lang = await get_user_lang(i.user.id)
@@ -2050,7 +2261,16 @@ async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choi
     await i.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.tree.command(name="rates", description="Show rates")
+@bot.tree.command(
+    name="rates",
+    description="Show rates",
+    description_localizations={
+        discord.Locale.arabic: "عرض أسعار ونقاط اللوجات",
+        discord.Locale.german: "Belohnungsraten anzeigen",
+        discord.Locale.italian: "Visualizza tassi punti",
+        discord.Locale.hindi: "अंक दरें देखें"
+    }
+)
 async def rates(i: discord.Interaction):
     if not await gate(i, "rates"):
         return
@@ -2061,7 +2281,16 @@ async def rates(i: discord.Interaction):
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="link", description="Link Roblox")
+@bot.tree.command(
+    name="link",
+    description="Link Roblox",
+    description_localizations={
+        discord.Locale.arabic: "ربط حساب روبلوكس",
+        discord.Locale.german: "Roblox-Konto verknüpfen",
+        discord.Locale.italian: "Collega account Roblox",
+        discord.Locale.hindi: "रोблоक्स खाता लिंक करें"
+    }
+)
 async def link(i: discord.Interaction, roblox_username: str):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "link"):
@@ -2076,7 +2305,16 @@ async def link(i: discord.Interaction, roblox_username: str):
     await i.response.send_message(t(lang, "roblox_linked", username=roblox_username.strip()), ephemeral=True)
 
 
-@bot.tree.command(name="profile", description="Member profile")
+@bot.tree.command(
+    name="profile",
+    description="Member profile",
+    description_localizations={
+        discord.Locale.arabic: "عرض بروفايل العضو",
+        discord.Locale.german: "Profil anzeigen",
+        discord.Locale.italian: "Visualizza profilo",
+        discord.Locale.hindi: "प्रोफ़ाइल देखें"
+    }
+)
 async def profile(i: discord.Interaction, member: Optional[discord.Member] = None):
     if not await gate(i, "profile"):
         return
@@ -2115,7 +2353,16 @@ async def get_crew_choices(interaction: discord.Interaction, current: str) -> Li
     return [app_commands.Choice(name=r[0], value=r[0]) for r in rows if current.lower() in r[0].lower()][:25]
 
 
-@bot.tree.command(name="stats", description="War stats")
+@bot.tree.command(
+    name="stats",
+    description="War stats",
+    description_localizations={
+        discord.Locale.arabic: "عرض إحصائيات الحروب والطواقم",
+        discord.Locale.german: "Statistiken anzeigen",
+        discord.Locale.italian: "Visualizza statistiche",
+        discord.Locale.hindi: "आंकड़े देखें"
+    }
+)
 @app_commands.autocomplete(crew=get_crew_choices)
 async def stats(i: discord.Interaction, crew: Optional[str] = None):
     if not await gate(i, "stats"):
@@ -2152,7 +2399,16 @@ async def stats(i: discord.Interaction, crew: Optional[str] = None):
     await i.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="inactive", description="Inactive members")
+@bot.tree.command(
+    name="inactive",
+    description="Inactive members",
+    description_localizations={
+        discord.Locale.arabic: "تتبع الأعضاء الخاملين",
+        discord.Locale.german: "Inaktive Mitglieder verfolgen",
+        discord.Locale.italian: "Traccia membri inattivi",
+        discord.Locale.hindi: "निष्क्रिय सदस्यों को ट्रैक करें"
+    }
+)
 @app_commands.describe(days="Number of days of inactivity")
 async def inactive(i: discord.Interaction, days: int = 30):
     if not await gate(i, "inactive", editor=True):
@@ -2188,7 +2444,16 @@ async def inactive(i: discord.Interaction, days: int = 30):
     await i.followup.send("\n".join(lines)[:1990], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.tree.command(name="season-reset", description="Reset season")
+@bot.tree.command(
+    name="season-reset",
+    description="Reset season",
+    description_localizations={
+        discord.Locale.arabic: "إعادة تصفير الموسم",
+        discord.Locale.german: "Saison zurücksetzen",
+        discord.Locale.italian: "Ripristina stagione",
+        discord.Locale.hindi: "सीज़न रीसेट करें"
+    }
+)
 async def season_reset(i: discord.Interaction, name: str, confirm: str, reset_ranks: bool = False):
     if not await gate(i, "season-reset", editor=True):
         return
@@ -2197,7 +2462,16 @@ async def season_reset(i: discord.Interaction, name: str, confirm: str, reset_ra
     await i.response.send_message("Season reset successfully.", ephemeral=True)
 
 
-@bot.tree.command(name="season-top", description="Archived season top")
+@bot.tree.command(
+    name="season-top",
+    description="Archived season top",
+    description_localizations={
+        discord.Locale.arabic: "عرض ليدربورد موسم مؤرشف",
+        discord.Locale.german: "Archivierte Bestenliste anzeigen",
+        discord.Locale.italian: "Visualizza classifica archiviata",
+        discord.Locale.hindi: "संग्रहीत सीज़न लीडरबोर्ड देखें"
+    }
+)
 async def season_top(i: discord.Interaction, name: str):
     if not await gate(i, "season-top"):
         return
@@ -2222,7 +2496,16 @@ class LanguageSelectView(discord.ui.View):
         await set_user_lang(i.user.id, chosen_lang)
         await i.response.edit_message(content=t(chosen_lang, "lang_updated"), view=None)
 
-@bot.tree.command(name="language", description="Change your preferred bot language")
+@bot.tree.command(
+    name="language",
+    description="Change your preferred bot language",
+    description_localizations={
+        discord.Locale.arabic: "تغيير لغتك المفضلة في البوت",
+        discord.Locale.german: "Bevorzugte Sprache wählen",
+        discord.Locale.italian: "Scegli la lingua del bot",
+        discord.Locale.hindi: "पसंदीदा भाषा चुनें"
+    }
+)
 async def language_cmd(i: discord.Interaction):
     lang = await get_user_lang(i.user.id)
     embed = discord.Embed(title="🌐 Language Settings / إعدادات اللغة", description=t(lang, "lang_desc"), color=discord.Color.blue())
@@ -2274,7 +2557,16 @@ class InitialCrewModal(discord.ui.Modal, title="إنشاء كرو جديد"):
         roster = f"• {self.first_player.value}"
         await i.response.send_message(f"تم تسجيل أول لاعب في كرو **{self.crew_name.value}**.\nهل تريد إضافة لاعب آخر؟", view=ContinueCrewView(self.crew_name.value, roster), ephemeral=True)
 
-@bot.tree.command(name="create-new-crew", description="Create a new crew roster interactively")
+@bot.tree.command(
+    name="create-new-crew",
+    description="Create a new crew roster interactively",
+    description_localizations={
+        discord.Locale.arabic: "إنشاء تشكيلة كرو تفاعلية",
+        discord.Locale.german: "Crew erstellen",
+        discord.Locale.italian: "Crea crew",
+        discord.Locale.hindi: "क्रू रोस्टर बनाएं"
+    }
+)
 async def create_new_crew(i: discord.Interaction):
     if not await gate(i, "create-new-crew", editor=True):
         return
@@ -2296,7 +2588,16 @@ class EditCrewModal(discord.ui.Modal, title="تعديل محتوى الكرو"):
             await db.commit()
         await i.response.send_message(t(lang, "crew_updated", crew=self.crew_name), ephemeral=True)
 
-@bot.tree.command(name="edit-crew", description="Edit an existing crew roster")
+@bot.tree.command(
+    name="edit-crew",
+    description="Edit an existing crew roster",
+    description_localizations={
+        discord.Locale.arabic: "تعديل تشكيلة كرو موجودة",
+        discord.Locale.german: "Crew bearbeiten",
+        discord.Locale.italian: "Modifica crew",
+        discord.Locale.hindi: "क्रू रोस्टर संपादित करें"
+    }
+)
 @app_commands.autocomplete(crew=get_crew_choices)
 async def edit_crew(i: discord.Interaction, crew: str):
     lang = await get_user_lang(i.user.id)
@@ -2385,7 +2686,16 @@ def get_help_embeds_for_lang(lang: str = "en"):
     return [e1, e2, e3, e4]
 
 
-@bot.tree.command(name="help", description="Show full help manual for all commands")
+@bot.tree.command(
+    name="help",
+    description="Show full help manual for all commands",
+    description_localizations={
+        discord.Locale.arabic: "عرض دليل الأوامر الشامل",
+        discord.Locale.german: "Handbuch anzeigen",
+        discord.Locale.italian: "Mostra manuale",
+        discord.Locale.hindi: "निर्देशिका दिखाएं"
+    }
+)
 async def help_cmd(i: discord.Interaction):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "help"):
@@ -2393,7 +2703,16 @@ async def help_cmd(i: discord.Interaction):
     await i.response.send_message(embeds=get_help_embeds_for_lang(lang), ephemeral=True)
 
 
-@bot.tree.command(name="send-help-panel", description="Send full help manual panel to channel")
+@bot.tree.command(
+    name="send-help-panel",
+    description="Send full help manual panel to channel",
+    description_localizations={
+        discord.Locale.arabic: "إرسال بانل دليل الأوامر إلى قناة",
+        discord.Locale.german: "Handbuch-Panel senden",
+        discord.Locale.italian: "Invia pannello manuale",
+        discord.Locale.hindi: "सहायता पैनल भेजें"
+    }
+)
 async def send_help_panel(i: discord.Interaction, channel: Optional[discord.TextChannel] = None):
     lang = await get_user_lang(i.user.id)
     if not await gate(i, "send-help-panel", editor=True):
@@ -2403,7 +2722,16 @@ async def send_help_panel(i: discord.Interaction, channel: Optional[discord.Text
     await i.response.send_message(f"✅ Successfully published help panel in {target.mention}!", ephemeral=True)
 
 
-@bot.tree.command(name="log-update", description="Publish a formatted bot update notice")
+@bot.tree.command(
+    name="log-update",
+    description="Publish a formatted bot update notice",
+    description_localizations={
+        discord.Locale.arabic: "نشر إعلان تحديثات البوت",
+        discord.Locale.german: "Bot-Update ankündigen",
+        discord.Locale.italian: "Pubblica aggiornamento bot",
+        discord.Locale.hindi: "बॉट अपडेट सूचना प्रकाशित करें"
+    }
+)
 @app_commands.choices(preset=UPDATE_TYPE_CHOICES)
 @app_commands.describe(preset="Choose the update preset", channel="Target channel (optional)")
 async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], channel: Optional[discord.TextChannel] = None):
@@ -2443,7 +2771,16 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
         await i.followup.send(f"❌ Failed to publish update notice: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="backup", description="Backup server data directly to Bot Owner DMs")
+@bot.tree.command(
+    name="backup",
+    description="Backup server data directly to Bot Owner DMs",
+    description_localizations={
+        discord.Locale.arabic: "إنشاء نسخة احتياطية لبيانات السيرفر",
+        discord.Locale.german: "Backup erstellen",
+        discord.Locale.italian: "Crea backup",
+        discord.Locale.hindi: "डेटाबेस बैकअप बनाएं"
+    }
+)
 @app_commands.choices(scope=BACKUP_SCOPE_CHOICES)
 async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str]):
     if not await gate(i, "backup", editor=True):
@@ -2466,7 +2803,16 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str]):
         await i.followup.send("❌ Could not DM owner. Please check DM privacy settings.", ephemeral=True)
 
 
-@bot.tree.command(name="restore-backup", description="Read and restore backup file (.json or .db)")
+@bot.tree.command(
+    name="restore-backup",
+    description="Read and restore backup file (.json or .db)",
+    description_localizations={
+        discord.Locale.arabic: "استعادة النسخة الاحتياطية",
+        discord.Locale.german: "Backup wiederherstellen",
+        discord.Locale.italian: "Ripristina backup",
+        discord.Locale.hindi: "बैकअप पुनर्स्थापित करें"
+    }
+)
 @app_commands.describe(backup_file="Attach the backup JSON or DB file")
 async def restore_backup(i: discord.Interaction, backup_file: discord.Attachment):
     if not await gate(i, "restore-backup", editor=True):
