@@ -146,7 +146,7 @@ class BotTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def balance(self, uid, gid=None):
         async with aiosqlite.connect(bot.DB) as db:
-            cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (gid or self.GID, uid))
+            cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (self.GID if gid is None else gid, uid))
             row = await cur.fetchone()
         return row[0] if row else None
 
