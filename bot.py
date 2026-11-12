@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v3.1.0"
+BOT_VERSION = "v3.2.0"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -2619,6 +2619,20 @@ LANGS = {
 DEFAULT_LANG = "ar"
 
 TEXTS = {
+    "language_prompt": {
+        "ar": "🌐 **اختار لغة البوت للسيرفر بالكامل:**",
+        "en": "🌐 **Choose the bot language for this entire server:**",
+        "de": "🌐 **Wähle die Sprache des Bots für den gesamten Server:**",
+        "it": "🌐 **Scegli la lingua del bot per l'intero server:**",
+        "hi": "🌐 **पूरे सर्वर के लिए बॉट की भाषा चुनें:**",
+    },
+    "crew_bad_members": {
+        "ar": "❌ فيه عضو غير صحيح أو مش موجود في السيرفر. استخدم منشن أو ID للأعضاء، وافصل بينهم بمسافة أو فاصلة.",
+        "en": "❌ One or more members are invalid or not in this server. Use member mentions or IDs, separated by spaces or commas.",
+        "de": "❌ Ein oder mehrere Mitglieder sind ungültig oder nicht auf diesem Server. Verwende Erwähnungen oder IDs, getrennt durch Leerzeichen oder Kommas.",
+        "it": "❌ Uno o più membri non sono validi o non sono in questo server. Usa menzioni o ID, separati da spazi o virgole.",
+        "hi": "❌ एक या अधिक सदस्य अमान्य हैं या इस सर्वर में नहीं हैं। सदस्यों के मेंशन या ID दें और उन्हें स्पेस या कॉमा से अलग करें।",
+    },
     "lang_changed": {
         "ar": "✅ تم تغيير لغة التفاعل الخاصة بك إلى **العربية** بنجاح!",
         "en": "✅ Your preferred interaction language has been updated to **English**!",
@@ -2722,9 +2736,17 @@ def tr(key, lang, **kw):
     return text.format(**kw) if kw else text
 
 
-async def user_lang(guild_id, user_id):
-    v = await raw_setting(guild_id, f"state:lang:{user_id}")
-    return v if v in LANGS else DEFAULT_LANG
+async def user_lang(guild_id, user_id=None):
+    # Language is a server-wide setting. Legacy per-user settings remain as fallback
+    # so older installations do not lose their previous preference unexpectedly.
+    v = await raw_setting(guild_id, "state:server_lang")
+    if v in LANGS:
+        return v
+    if user_id is not None:
+        v = await raw_setting(guild_id, f"state:lang:{user_id}")
+        if v in LANGS:
+            return v
+    return DEFAULT_LANG
 
 
 class LanguageSelect(discord.ui.Select):
@@ -2737,7 +2759,7 @@ class LanguageSelect(discord.ui.Select):
         lang = self.values[0]
         if lang not in LANGS:
             return await i.response.send_message("❌ Invalid language.", ephemeral=True)
-        await set_setting(i.guild.id, f"state:lang:{i.user.id}", lang)
+        await set_setting(i.guild.id, "state:server_lang", lang)
         await i.response.send_message(tr("lang_changed", lang), ephemeral=True)
 
 
@@ -2755,7 +2777,8 @@ class LanguageView(discord.ui.View):
 async def language_cmd(i: discord.Interaction):
     if not await gate(i, "language"):
         return
-    await i.response.send_message("🌐 **Please select your language / الرجاء اختيار لغتك المفضلة:**",
+    lang = await user_lang(i.guild.id, i.user.id)
+    await i.response.send_message(tr("language_prompt", lang),
                                   view=LanguageView(i.user.id), ephemeral=True)
 
 
@@ -2816,19 +2839,62 @@ class CrewView(discord.ui.View):
         return i.user.id == self.requester_id
 
 
-@bot.tree.command(name="create-new-crew", description="Create a crew with its divisions | إنشاء طاقم جديد بأقسامه")
+def parse_member_tokens(raw: Optional[str]):
+    """Extract Discord member IDs from mentions or plain numeric IDs."""
+    if not raw:
+        return []
+    tokens = re.split(r"[\s,;]+", raw.strip())
+    ids = []
+    for token in tokens:
+        if not token:
+            continue
+        match = re.fullmatch(r"<@!?(\d+)>", token)
+        value = match.group(1) if match else token
+        if not value.isdigit():
+            raise ValueError("invalid member token")
+        uid = int(value)
+        if uid not in ids:
+            ids.append(uid)
+    return ids
+
+
+async def resolve_crew_members(guild: discord.Guild, raw: Optional[str]):
+    ids = parse_member_tokens(raw)
+    members = []
+    for uid in ids:
+        member = guild.get_member(uid)
+        if member is None:
+            try:
+                member = await guild.fetch_member(uid)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                raise ValueError("member not found")
+        if not member.bot:
+            members.append(member)
+    return members
+
+
+@bot.tree.command(name="create-new-crew", description="Create a crew with multiple leaders and members | إنشاء طاقم بأكثر من قائد وعضو")
 @app_commands.describe(
-    crew_name="Crew name (2-40 chars) | اسم الطاقم", owner_member="Owner of the Crew | مالك الطاقم",
-    captain="Captain | قائد الطاقم", voice_captain="Voice Captain | قائد صوتي",
-    team_z_member="Team Z member | عضو Team Z", team_y_member="Team Y member | عضو Team Y",
-    team_x_member="Team X member | عضو Team X", team_s_member="Team S member | عضو Team S",
-    team_a_member="Team A member | عضو Team A")
+    crew_name="Crew name (2-40 chars) | اسم الطاقم",
+    owner_member="Owner of the Crew | مالك الطاقم",
+    captains="Captain mentions/IDs, separated by spaces or commas | منشنات أو IDs الكباتن",
+    voice_captains="Voice captain mentions/IDs | منشنات أو IDs كباتن الفويس",
+    team_z_members="Team Z members | أعضاء Team Z",
+    team_y_members="Team Y members | أعضاء Team Y",
+    team_x_members="Team X members | أعضاء Team X",
+    team_s_members="Team S members | أعضاء Team S",
+    team_a_members="Team A members | أعضاء Team A")
 async def create_new_crew(
-        i: discord.Interaction, crew_name: app_commands.Range[str, 2, 40], owner_member: discord.Member,
-        captain: Optional[discord.Member] = None, voice_captain: Optional[discord.Member] = None,
-        team_z_member: Optional[discord.Member] = None, team_y_member: Optional[discord.Member] = None,
-        team_x_member: Optional[discord.Member] = None, team_s_member: Optional[discord.Member] = None,
-        team_a_member: Optional[discord.Member] = None):
+        i: discord.Interaction,
+        crew_name: app_commands.Range[str, 2, 40],
+        owner_member: discord.Member,
+        captains: Optional[app_commands.Range[str, 1, 1000]] = None,
+        voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_z_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_y_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_x_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_s_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_a_members: Optional[app_commands.Range[str, 1, 1000]] = None):
     if not await gate(i, "create-new-crew", editor=True):
         return
     lang = await user_lang(i.guild.id, i.user.id)
@@ -2838,12 +2904,14 @@ async def create_new_crew(
     if owner_member.bot:
         return await i.response.send_message(tr("crew_bad_owner", lang), ephemeral=True)
 
-    bots_ignored = False
-    lists = []
-    for member in (captain, voice_captain, team_z_member, team_y_member, team_x_member, team_s_member, team_a_member):
-        if member is not None and member.bot:
-            bots_ignored = True
-        lists.append([member.id] if member is not None and not member.bot else [])
+    raw_groups = (captains, voice_captains, team_z_members, team_y_members,
+                  team_x_members, team_s_members, team_a_members)
+    try:
+        groups = [await resolve_crew_members(i.guild, raw) for raw in raw_groups]
+    except ValueError:
+        return await i.response.send_message(tr("crew_bad_members", lang), ephemeral=True)
+
+    lists = [[member.id for member in group] for group in groups]
 
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT crew_name FROM crews WHERE guild_id=?", (i.guild.id,))
@@ -2862,11 +2930,7 @@ async def create_new_crew(
             return await i.response.send_message(tr("crew_exists", lang), ephemeral=True)
 
     await audit(f"🎖️ {i.user.mention} created crew **{crew_name}** (owner {owner_member.mention})", i.guild)
-    msg = tr("crew_created", lang, name=crew_name)
-    if bots_ignored:
-        msg += "\n" + tr("bots_ignored", lang)
-    await i.response.send_message(msg, ephemeral=True)
-
+    await i.response.send_message(tr("crew_created", lang, name=crew_name), ephemeral=True)
 
 @bot.tree.command(name="crews-list", description="Browse crews and their divisions | استعراض الطواقم وأقسامها")
 @app_commands.describe(search="Filter by name | تصفية بالاسم")
