@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v3.3.0"
+BOT_VERSION = "v3.3.1"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -345,12 +345,31 @@ async def init_db():
                 await db.execute(f"ALTER TABLE {table} RENAME TO {table}_legacy")
         await db.executescript(SCHEMA)
 
-        # ترحيل أعمدة فويس كابتن كل تيم في قواعد البيانات القديمة بدون حذف بياناتها.
+        # ترحيل جدول الطواقم القديم إلى أحدث schema بدون حذف أي طاقم أو بيانات.
+        # CREATE TABLE IF NOT EXISTS لا يضيف أعمدة إلى جدول موجود مسبقًا؛ لذلك
+        # نضيف كل الأعمدة المطلوبة بشكل مستقل قبل تنفيذ أوامر إنشاء الطاقم.
+        crew_column_migrations = {
+            "guild_id": "INTEGER NOT NULL DEFAULT 0",
+            "crew_name": "TEXT NOT NULL DEFAULT ''",
+            "owner_id": "INTEGER NOT NULL DEFAULT 0",
+            "captains_data": "TEXT NOT NULL DEFAULT '[]'",
+            "voice_captains_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_z_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_y_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_x_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_s_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_a_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_z_voice_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_y_voice_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_x_voice_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_s_voice_data": "TEXT NOT NULL DEFAULT '[]'",
+            "team_a_voice_data": "TEXT NOT NULL DEFAULT '[]'",
+            "created_at": "TEXT NOT NULL DEFAULT ''",
+        }
         crew_cols = await table_columns(db, "crews")
-        for col in ("team_z_voice_data", "team_y_voice_data", "team_x_voice_data",
-                    "team_s_voice_data", "team_a_voice_data"):
+        for col, definition in crew_column_migrations.items():
             if col not in crew_cols:
-                await db.execute(f"ALTER TABLE crews ADD COLUMN {col} TEXT DEFAULT '[]'")
+                await db.execute(f"ALTER TABLE crews ADD COLUMN {col} {definition}")
 
         # 2) نسخ البيانات القديمة
         migrated_members = False
