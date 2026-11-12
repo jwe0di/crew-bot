@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v3.4.0"
+BOT_VERSION = "v3.4.1"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -2937,19 +2937,30 @@ class CrewBrowserView(discord.ui.View):
 
 
 def parse_member_tokens(raw: Optional[str]):
-    """Extract Discord member IDs from mentions or plain numeric IDs."""
-    if not raw:
+    """Accept multiple Discord mentions or numeric user IDs in one field.
+
+    Examples: <@123> <@456>, <@!123>,456, or one ID per line.
+    """
+    if not raw or not raw.strip():
         return []
-    tokens = re.split(r"[\s,;]+", raw.strip())
+
+    # Extract mentions wherever they appear, even when the user mixes commas
+    # and spaces. Remove them before scanning for plain numeric IDs.
+    mention_ids = re.findall(r"<@!?(\d+)>", raw)
+    remainder = re.sub(r"<@!?\d+>", " ", raw)
+    # Also accept Discord profile links pasted as raw IDs, separated by
+    # whitespace, commas, semicolons, or newlines.
+    tokens = re.split(r"[\s,;|]+", remainder.strip())
     ids = []
-    for token in tokens:
-        if not token:
+    for value in [*mention_ids, *tokens]:
+        value = value.strip()
+        if not value:
             continue
-        match = re.fullmatch(r"<@!?(\d+)>", token)
-        value = match.group(1) if match else token
         if not value.isdigit():
-            raise ValueError("invalid member token")
+            raise ValueError("Use member mentions or numeric Discord IDs")
         uid = int(value)
+        if uid <= 0:
+            raise ValueError("Invalid member ID")
         if uid not in ids:
             ids.append(uid)
     return ids
@@ -2975,15 +2986,15 @@ async def resolve_crew_members(guild: discord.Guild, raw: Optional[str]):
     crew_name="Crew name | اسم الطاقم",
     owner_member="Crew owner | مالك الطاقم",
     captains="Captain mentions/IDs separated by spaces or commas | منشنات الكباتن مفصولة بمسافات أو فواصل",
-    team_z_members="Team Z players: mention multiple members separated by spaces/commas | لاعبي Z: منشنات متعددة",
+    team_z_members="Team Z players: paste multiple mentions, e.g. @A @B @C | لاعبي Z: منشنات متعددة مثل @A @B @C",
     team_z_commanders="Team Z commanders: mention multiple members | كوماندرز Z: منشنات متعددة",
-    team_y_members="Team Y players: mention multiple members | لاعبي Y: منشنات متعددة",
+    team_y_members="Team Y players: paste @A @B @C or IDs separated by commas | لاعبي Y: حط منشنات متعددة أو IDs بفواصل",
     team_y_commanders="Team Y commanders: mention multiple members | كوماندرز Y: منشنات متعددة",
-    team_x_members="Team X players: mention multiple members | لاعبي X: منشنات متعددة",
+    team_x_members="Team X players: paste @A @B @C or IDs separated by commas | لاعبي X: حط منشنات متعددة أو IDs بفواصل",
     team_x_commanders="Team X commanders: mention multiple members | كوماندرز X: منشنات متعددة",
-    team_s_members="Team S players: mention multiple members | لاعبي S: منشنات متعددة",
+    team_s_members="Team S players: paste @A @B @C or IDs separated by commas | لاعبي S: حط منشنات متعددة أو IDs بفواصل",
     team_s_commanders="Team S commanders: mention multiple members | كوماندرز S: منشنات متعددة",
-    team_a_members="Team A players: mention multiple members | لاعبي A: منشنات متعددة",
+    team_a_members="Team A players: paste @A @B @C or IDs separated by commas | لاعبي A: حط منشنات متعددة أو IDs بفواصل",
     team_a_commanders="Team A commanders: mention multiple members | كوماندرز A: منشنات متعددة")
 async def create_new_crew(
         i: discord.Interaction,
