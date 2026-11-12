@@ -25,7 +25,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v3.2.0"
+BOT_VERSION = "v3.3.0"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -269,6 +269,11 @@ CREATE TABLE IF NOT EXISTS crews(
     team_x_data TEXT,
     team_s_data TEXT,
     team_a_data TEXT,
+    team_z_voice_data TEXT,
+    team_y_voice_data TEXT,
+    team_x_voice_data TEXT,
+    team_s_voice_data TEXT,
+    team_a_voice_data TEXT,
     created_at TEXT,
     PRIMARY KEY(guild_id, crew_name)
 );
@@ -339,6 +344,13 @@ async def init_db():
             if cols and "guild_id" not in cols and not await table_columns(db, table + "_legacy"):
                 await db.execute(f"ALTER TABLE {table} RENAME TO {table}_legacy")
         await db.executescript(SCHEMA)
+
+        # ترحيل أعمدة فويس كابتن كل تيم في قواعد البيانات القديمة بدون حذف بياناتها.
+        crew_cols = await table_columns(db, "crews")
+        for col in ("team_z_voice_data", "team_y_voice_data", "team_x_voice_data",
+                    "team_s_voice_data", "team_a_voice_data"):
+            if col not in crew_cols:
+                await db.execute(f"ALTER TABLE crews ADD COLUMN {col} TEXT DEFAULT '[]'")
 
         # 2) نسخ البيانات القديمة
         migrated_members = False
@@ -2727,6 +2739,9 @@ TEXTS = {
     "none": {"ar": "لا يوجد", "en": "None", "de": "Keine", "it": "Nessuno", "hi": "कोई नहीं"},
     "empty": {"ar": "فارغ", "en": "Empty", "de": "Leer", "it": "Vuoto", "hi": "खाली"},
     "founded": {"ar": "تاريخ التأسيس", "en": "Founded", "de": "Gegründet", "it": "Fondato", "hi": "स्थापना"},
+    "team_members": {"ar": "الأعضاء", "en": "Members", "de": "Mitglieder", "it": "Membri", "hi": "सदस्य"},
+    "team_voice_captains": {"ar": "فويس كابتن", "en": "Voice Captains", "de": "Voice-Captains", "it": "Voice Captain", "hi": "वॉइस कप्तान"},
+    "browse_page": {"ar": "صفحة {page} من {pages}", "en": "Page {page} of {pages}", "de": "Seite {page} von {pages}", "it": "Pagina {page} di {pages}", "hi": "पृष्ठ {page} / {pages}"},
 }
 
 
@@ -2802,41 +2817,80 @@ def _mentions_or(ids, empty_text):
 
 
 class CrewSelect(discord.ui.Select):
-    def __init__(self, names, lang):
-        options = [discord.SelectOption(label=n[:100], value=n[:100]) for n in names[:25]]
-        super().__init__(placeholder=tr("select_placeholder", lang)[:150], min_values=1, max_values=1, options=options)
-        self.lang = lang
+    def __init__(self, browser):
+        self.browser = browser
+        names = browser.page_names
+        options = [discord.SelectOption(label=n[:100], value=n) for n in names]
+        super().__init__(placeholder=tr("select_placeholder", browser.lang)[:150],
+                         min_values=1, max_values=1, options=options)
 
     async def callback(self, i: discord.Interaction):
         name = self.values[0]
         async with aiosqlite.connect(DB) as db:
             cur = await db.execute(
                 "SELECT owner_id, captains_data, voice_captains_data, team_z_data, team_y_data, team_x_data, "
-                "team_s_data, team_a_data, created_at FROM crews WHERE guild_id=? AND crew_name=?", (i.guild.id, name))
+                "team_s_data, team_a_data, created_at, team_z_voice_data, team_y_voice_data, team_x_voice_data, "
+                "team_s_voice_data, team_a_voice_data FROM crews WHERE guild_id=? AND crew_name=?",
+                (i.guild.id, name))
             row = await cur.fetchone()
         if not row:
-            return await i.response.send_message(tr("crew_not_found", self.lang), ephemeral=True)
-        owner, cap, vcap, *teams, created_at = row
-        none, empty = tr("none", self.lang), tr("empty", self.lang)
-        e = discord.Embed(title=tr("structure_title", self.lang, name=clip(name, 60)),
+            return await i.response.send_message(tr("crew_not_found", self.browser.lang), ephemeral=True)
+        owner, cap, vcap, *rest = row
+        teams, created_at, team_voices = rest[:5], rest[5], rest[6:11]
+        lang = self.browser.lang
+        none, empty = tr("none", lang), tr("empty", lang)
+        e = discord.Embed(title=tr("structure_title", lang, name=clip(name, 60)),
                           color=discord.Color.dark_gold(), timestamp=now_utc())
         e.add_field(name="👑 Owner of the Crew", value=f"<@{owner}>" if owner else "—", inline=False)
         e.add_field(name="⚔️ Captains", value=_mentions_or(_id_list(cap), none), inline=False)
-        e.add_field(name="🎙️ Voice Captains", value=_mentions_or(_id_list(vcap), none), inline=False)
-        for (_, label), raw in zip(CREW_TEAMS, teams):
-            e.add_field(name=f"🛡️ {label}", value=_mentions_or(_id_list(raw), empty), inline=False)
-        e.set_footer(text=f"{tr('founded', self.lang)}: {str(created_at)[:10]}")
+        e.add_field(name="🎙️ General Voice Captains", value=_mentions_or(_id_list(vcap), none), inline=False)
+        for (col, label), raw, voice_raw in zip(CREW_TEAMS, teams, team_voices):
+            e.add_field(name=f"🛡️ {label} · {tr('team_members', lang)}",
+                        value=_mentions_or(_id_list(raw), empty), inline=False)
+            e.add_field(name=f"🎙️ {label} · {tr('team_voice_captains', lang)}",
+                        value=_mentions_or(_id_list(voice_raw), none), inline=False)
+        e.set_footer(text=f"{tr('founded', lang)}: {str(created_at)[:10]}")
         await i.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
-class CrewView(discord.ui.View):
-    def __init__(self, names, lang, requester_id):
-        super().__init__(timeout=120)
+class CrewBrowserView(discord.ui.View):
+    def __init__(self, names, lang, requester_id, page=0):
+        super().__init__(timeout=180)
+        self.names = names
+        self.lang = lang
         self.requester_id = requester_id
-        self.add_item(CrewSelect(names, lang))
+        self.page = page
+        self.page_size = 25
+        self.page_names = self.names[self.page * self.page_size:(self.page + 1) * self.page_size]
+        self.add_item(CrewSelect(self))
+        self.previous_button.disabled = self.page <= 0
+        self.next_button.disabled = (self.page + 1) * self.page_size >= len(self.names)
 
     async def interaction_check(self, i: discord.Interaction) -> bool:
         return i.user.id == self.requester_id
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def previous_button(self, i: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        await self._refresh(i)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, i: discord.Interaction, button: discord.ui.Button):
+        max_page = max(0, (len(self.names) - 1) // self.page_size)
+        self.page = min(max_page, self.page + 1)
+        await self._refresh(i)
+
+    async def _refresh(self, i: discord.Interaction):
+        self.clear_items()
+        self.page_names = self.names[self.page * self.page_size:(self.page + 1) * self.page_size]
+        self.add_item(CrewSelect(self))
+        self.add_item(self.previous_button)
+        self.add_item(self.next_button)
+        self.previous_button.disabled = self.page <= 0
+        self.next_button.disabled = (self.page + 1) * self.page_size >= len(self.names)
+        pages = max(1, (len(self.names) + self.page_size - 1) // self.page_size)
+        await i.response.edit_message(content=tr("crews_prompt", self.lang) + "\n" +
+                                       tr("browse_page", self.lang, page=self.page + 1, pages=pages), view=self)
 
 
 def parse_member_tokens(raw: Optional[str]):
@@ -2873,17 +2927,22 @@ async def resolve_crew_members(guild: discord.Guild, raw: Optional[str]):
     return members
 
 
-@bot.tree.command(name="create-new-crew", description="Create a crew with multiple leaders and members | إنشاء طاقم بأكثر من قائد وعضو")
+@bot.tree.command(name="create-new-crew", description="Create a crew with multiple leaders and team voice captains | إنشاء طاقم بقيادات وفويس كابتن لكل تيم")
 @app_commands.describe(
     crew_name="Crew name (2-40 chars) | اسم الطاقم",
     owner_member="Owner of the Crew | مالك الطاقم",
-    captains="Captain mentions/IDs, separated by spaces or commas | منشنات أو IDs الكباتن",
-    voice_captains="Voice captain mentions/IDs | منشنات أو IDs كباتن الفويس",
+    captains="Captain mentions/IDs separated by spaces or commas | منشنات أو IDs الكباتن",
+    voice_captains="General voice captains (optional) | فويس كابتن عام (اختياري)",
     team_z_members="Team Z members | أعضاء Team Z",
+    team_z_voice_captains="Team Z voice captains, add as many as needed | فويس كابتن Team Z (أضف أكتر من واحد)",
     team_y_members="Team Y members | أعضاء Team Y",
+    team_y_voice_captains="Team Y voice captains | فويس كابتن Team Y",
     team_x_members="Team X members | أعضاء Team X",
+    team_x_voice_captains="Team X voice captains | فويس كابتن Team X",
     team_s_members="Team S members | أعضاء Team S",
-    team_a_members="Team A members | أعضاء Team A")
+    team_s_voice_captains="Team S voice captains | فويس كابتن Team S",
+    team_a_members="Team A members | أعضاء Team A",
+    team_a_voice_captains="Team A voice captains | فويس كابتن Team A")
 async def create_new_crew(
         i: discord.Interaction,
         crew_name: app_commands.Range[str, 2, 40],
@@ -2891,10 +2950,15 @@ async def create_new_crew(
         captains: Optional[app_commands.Range[str, 1, 1000]] = None,
         voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None,
         team_z_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_z_voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None,
         team_y_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_y_voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None,
         team_x_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_x_voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None,
         team_s_members: Optional[app_commands.Range[str, 1, 1000]] = None,
-        team_a_members: Optional[app_commands.Range[str, 1, 1000]] = None):
+        team_s_voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_a_members: Optional[app_commands.Range[str, 1, 1000]] = None,
+        team_a_voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None):
     if not await gate(i, "create-new-crew", editor=True):
         return
     lang = await user_lang(i.guild.id, i.user.id)
@@ -2904,14 +2968,18 @@ async def create_new_crew(
     if owner_member.bot:
         return await i.response.send_message(tr("crew_bad_owner", lang), ephemeral=True)
 
-    raw_groups = (captains, voice_captains, team_z_members, team_y_members,
-                  team_x_members, team_s_members, team_a_members)
+    raw_groups = (captains, voice_captains, team_z_members, team_y_members, team_x_members,
+                  team_s_members, team_a_members, team_z_voice_captains, team_y_voice_captains,
+                  team_x_voice_captains, team_s_voice_captains, team_a_voice_captains)
     try:
         groups = [await resolve_crew_members(i.guild, raw) for raw in raw_groups]
     except ValueError:
         return await i.response.send_message(tr("crew_bad_members", lang), ephemeral=True)
 
     lists = [[member.id for member in group] for group in groups]
+    # Validate the number of members stored per crew to avoid oversized Discord embeds.
+    if any(len(group) > 100 for group in lists):
+        return await i.response.send_message(tr("crew_bad_members", lang), ephemeral=True)
 
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT crew_name FROM crews WHERE guild_id=?", (i.guild.id,))
@@ -2922,8 +2990,10 @@ async def create_new_crew(
             return await i.response.send_message(tr("crew_limit", lang, max=MAX_CREWS_PER_GUILD), ephemeral=True)
         try:
             await db.execute(
-                "INSERT INTO crews(guild_id, crew_name, owner_id, captains_data, voice_captains_data, team_z_data, "
-                "team_y_data, team_x_data, team_s_data, team_a_data, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO crews(guild_id, crew_name, owner_id, captains_data, voice_captains_data, "
+                "team_z_data, team_y_data, team_x_data, team_s_data, team_a_data, "
+                "team_z_voice_data, team_y_voice_data, team_x_voice_data, team_s_voice_data, team_a_voice_data, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (i.guild.id, crew_name, owner_member.id, *[json.dumps(x) for x in lists], now_utc().isoformat()))
             await db.commit()
         except sqlite3.IntegrityError:
@@ -2932,23 +3002,64 @@ async def create_new_crew(
     await audit(f"🎖️ {i.user.mention} created crew **{crew_name}** (owner {owner_member.mention})", i.guild)
     await i.response.send_message(tr("crew_created", lang, name=crew_name), ephemeral=True)
 
-@bot.tree.command(name="crews-list", description="Browse crews and their divisions | استعراض الطواقم وأقسامها")
-@app_commands.describe(search="Filter by name | تصفية بالاسم")
-async def crews_list(i: discord.Interaction, search: Optional[app_commands.Range[str, 1, 40]] = None):
+class CrewPurgeConfirmView(discord.ui.View):
+    def __init__(self, requester_id: int, guild_id: int):
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.guild_id = guild_id
+
+    async def interaction_check(self, i: discord.Interaction) -> bool:
+        return i.user.id == self.requester_id
+
+    @discord.ui.button(label="Delete all crews", style=discord.ButtonStyle.danger)
+    async def confirm(self, i: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute("SELECT COUNT(*) FROM crews WHERE guild_id=?", (self.guild_id,))
+            count = (await cur.fetchone())[0]
+            await db.execute("DELETE FROM crews WHERE guild_id=?", (self.guild_id,))
+            await db.commit()
+        for child in self.children:
+            child.disabled = True
+        await i.response.edit_message(
+            content=f"🗑️ تم حذف {count} طاقم من هذا السيرفر." if count else "ℹ️ مفيش طواقم محفوظة للحذف.",
+            view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, i: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await i.response.edit_message(content="تم إلغاء الحذف.", view=self)
+
+
+@bot.tree.command(name="crews-delete-all", description="Delete all saved crews in this server | حذف كل الطواقم المسجلة في السيرفر")
+async def crews_delete_all(i: discord.Interaction):
+    if not await gate(i, "crews-delete-all", editor=True):
+        return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM crews WHERE guild_id=?", (i.guild.id,))
+        count = (await cur.fetchone())[0]
+    if not count:
+        return await i.response.send_message("ℹ️ مفيش طواقم محفوظة في السيرفر ده.", ephemeral=True)
+    await i.response.send_message(
+        f"⚠️ تأكيد نهائي: هيتحذف كل الطواقم الـ **{count}** المسجلة في السيرفر ده فقط. العملية مش قابلة للتراجع.",
+        view=CrewPurgeConfirmView(i.user.id, i.guild.id), ephemeral=True)
+
+
+@bot.tree.command(name="crews-list", description="Browse all crews from a dropdown | استعراض كل الطواقم من قائمة اختيار")
+async def crews_list(i: discord.Interaction):
     if not await gate(i, "crews-list"):
         return
     lang = await user_lang(i.guild.id, i.user.id)
     async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT crew_name FROM crews WHERE guild_id=? ORDER BY crew_name", (i.guild.id,))
+        cur = await db.execute("SELECT crew_name FROM crews WHERE guild_id=? ORDER BY crew_name COLLATE NOCASE", (i.guild.id,))
         names = [r[0] for r in await cur.fetchall()]
-    if search:
-        names = [n for n in names if search.strip().casefold() in n.casefold()]
     if not names:
         return await i.response.send_message(tr("no_crews", lang), ephemeral=True)
-    text = tr("crews_prompt", lang)
-    if len(names) > 25:
-        text += "\n" + tr("crews_truncated", lang, shown=25, total=len(names))
-    await i.response.send_message(text, view=CrewView(names, lang, i.user.id), ephemeral=True)
+    pages = max(1, (len(names) + 24) // 25)
+    view = CrewBrowserView(names, lang, i.user.id)
+    await i.response.send_message(tr("crews_prompt", lang) + "\n" +
+                                  tr("browse_page", lang, page=1, pages=pages),
+                                  view=view, ephemeral=True)
 
 
 # ================================================================ مهام تلقائية
