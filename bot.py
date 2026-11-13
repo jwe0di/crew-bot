@@ -1,4 +1,3 @@
-
 import asyncio
 import datetime as dt
 import hashlib
@@ -154,8 +153,11 @@ KIND_ROLES = [
     app_commands.Choice(name="Submitters", value="submit")]
 ACTIONS = [app_commands.Choice(name="Add", value="add"),
            app_commands.Choice(name="Remove", value="remove")]
-PERIOD_CHOICES = [app_commands.Choice(name="All time", value="all"),
-                  app_commands.Choice(name="This week", value="week")]
+PERIOD_CHOICES = [
+    app_commands.Choice(name="All time", value="all"),
+    app_commands.Choice(name="This season", value="season"),
+    app_commands.Choice(name="This week", value="week"),
+]
 RULE_CHOICES = [app_commands.Choice(name=l[:100], value=k) for k, l in RULE_LABELS.items()]
 POINT_CHOICES = [app_commands.Choice(name=l[:100], value=k) for k, l in POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in LADDER]
@@ -437,6 +439,13 @@ TEXTS = {
         "de": "🏆 Saison-Bestenliste",
         "it": "🏆 Classifica Stagionale",
         "hi": "🏆 सीज़न लीडरबोर्ड",
+    },
+    "lb_all": {
+        "ar": "📈 متصدري كل الأوقات",
+        "en": "📈 All-Time Leaderboard",
+        "de": "📈 Allzeit-Bestenliste",
+        "it": "📈 Classifica di sempre",
+        "hi": "📈 सर्वकालिक लीडरबोर्ड",
     },
     "no_pending": {
         "ar": "✅ مفيش لوجات منتظرة المراجعة حالياً.",
@@ -956,13 +965,17 @@ async def get_log(log_id):
         return await cur.fetchone()
 
 
-async def points_for(guild_id: int, log_type, result) -> int:
-    key = f"{log_type}_{result}" if log_type in ("war", "1v1", "2v2") else log_type
+async def points_for_key(guild_id, key) -> int:
     v = await get_setting(guild_id, "points:" + key)
     try:
         return int(v)
     except (TypeError, ValueError):
         return DEFAULT_POINTS.get(key, 0)
+
+
+async def points_for(guild_id: int, log_type, result) -> int:
+    key = f"{log_type}_{result}" if log_type in ("war", "1v1", "2v2") else log_type
+    return await points_for_key(guild_id, key)
 
 
 async def recipients_for(row, data):
@@ -1050,6 +1063,17 @@ async def gate(i: discord.Interaction, cmd_name: str, editor=False) -> bool:
 
 
 # ================================================================ مساعدات
+async def _ensure_members(guild):
+    """Populate the member cache. Uses fetch_members (discord.py 2.x) with a safe fallback."""
+    if getattr(guild, "chunked", False):
+        return
+    try:
+        async for _ in guild.fetch_members(limit=None):
+            pass
+    except (discord.HTTPException, AttributeError, TypeError):
+        pass
+
+
 async def audit(text, guild):
     ch_id = await cfg_get(guild.id, "all", "audit_channel")
     ch = guild.get_channel(ch_id) if ch_id else None
@@ -1099,7 +1123,13 @@ def find_crew_role(guild):
 
 
 def ladder_roles(guild):
-    return [discord.utils.find(lambda r, n=n: n.lower() in r.name.lower(), guild.roles) for n, _ in LADDER]
+    """Return one role per LADDER entry, using word-boundary matching so 'Lvl. 20'
+    never accidentally matches 'Lvl. 200' or 'Lvl. 20 Test'."""
+    result = []
+    for name, _ in LADDER:
+        pattern = re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE)
+        result.append(next((r for r in guild.roles if pattern.search(r.name)), None))
+    return result
 
 
 def valid_youtube(url: str):
@@ -1134,8 +1164,6 @@ async def report_error(i: discord.Interaction, error):
             await i.response.send_message(msg, ephemeral=True)
     except discord.HTTPException:
         pass
-
-
 # ================================================================ البوت
 class CrewBot(discord.Client):
     def __init__(self):
@@ -1183,6 +1211,17 @@ class CrewBot(discord.Client):
 
     async def on_guild_join(self, guild):
         await self.sync_guild(guild)
+        try:
+            target = guild.system_channel or next(
+                (c for c in guild.text_channels
+                 if c.permissions_for(guild.me).send_messages), None)
+            if target:
+                await target.send(
+                    f"👋 Thanks for adding **DragonSlayerBot** to **{guild.name}**!\n"
+                    f"Use `/help` for a full manual in 5 languages. "
+                    f"Admins: run `/setchannel` to configure review & log channels.")
+        except (discord.HTTPException, AttributeError):
+            pass
 
 
 bot = CrewBot()
@@ -1620,8 +1659,6 @@ class ReviewView(discord.ui.View):
             await i.message.edit(content=updated, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             pass
-
-
 # ================================================================ إنشاء اللوج
 class LogModal(discord.ui.Modal):
     def __init__(self, log_type, result, files, extra, defaults=None, parent_id=None):
@@ -1858,6 +1895,7 @@ async def log_tryout(i: discord.Interaction, candidate: discord.Member, result: 
     extra = {"candidate_id": candidate.id, "candidate": candidate.mention, "tester_id": i.user.id}
     await start_log(i, "tryout", result.value, [proof], extra)
 
+
 @bot.tree.command(name="resubmit", description="Fix and resend a rejected log | إعادة إرسال لوج مرفوض")
 async def resubmit(i: discord.Interaction, log_id: int):
     if not i.guild or not isinstance(i.user, discord.Member):
@@ -1967,6 +2005,42 @@ async def revoke_log(i: discord.Interaction, log_id: int, reason: app_commands.R
     await i.followup.send(msg, ephemeral=True)
 
 
+class PendingPaginator(discord.ui.View):
+    def __init__(self, items, guild_id, owner_user_id):
+        super().__init__(timeout=180)
+        self.items = items
+        self.guild_id = guild_id
+        self.owner_user_id = owner_user_id
+        self.page = 0
+        self.per_page = 15
+
+    def max_pages(self):
+        return max(1, (len(self.items) - 1) // self.per_page + 1)
+
+    def get_page_text(self):
+        chunk = self.items[self.page * self.per_page:(self.page + 1) * self.per_page]
+        lines = []
+        for lid, t, author, created, ch_id, msg_id in chunk:
+            link = f" https://discord.com/channels/{self.guild_id}/{ch_id}/{msg_id}" if ch_id and msg_id else ""
+            lines.append(f"**#{lid}** {LOG_TYPES.get(t, {}).get('label', t)} — <@{author}> — {str(created)[:16]}{link}")
+        header = (f"⏳ **Pending logs** — {len(self.items)} total — "
+                  f"page {self.page + 1}/{self.max_pages()}\n\n")
+        return header + "\n".join(lines)
+
+    async def interaction_check(self, i: discord.Interaction) -> bool:
+        return i.user.id == self.owner_user_id
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def prev(self, i: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        await i.response.edit_message(content=self.get_page_text()[:1990], view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next(self, i: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.max_pages() - 1, self.page + 1)
+        await i.response.edit_message(content=self.get_page_text()[:1990], view=self)
+
+
 @bot.tree.command(name="pending", description="List logs waiting for review | اللوجات المنتظرة")
 async def pending(i: discord.Interaction):
     if not await check_cmd_perm(i, "pending"):
@@ -1977,16 +2051,21 @@ async def pending(i: discord.Interaction):
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute(
             "SELECT id, type, author_id, created_at, review_channel, review_msg FROM logs "
-            "WHERE status='pending' AND guild_id=? ORDER BY id LIMIT 20", (i.guild.id,))
+            "WHERE status='pending' AND guild_id=? ORDER BY id DESC LIMIT 200", (i.guild.id,))
         rows = await cur.fetchall()
     if not rows:
         return await i.response.send_message(tr("no_pending", lang), ephemeral=True)
-    lines = []
-    for lid, t, author, created, ch_id, msg_id in rows:
-        link = f" https://discord.com/channels/{i.guild.id}/{ch_id}/{msg_id}" if ch_id and msg_id else ""
-        lines.append(f"**#{lid}** {LOG_TYPES.get(t, {}).get('label', t)} — <@{author}> — {str(created)[:16]}{link}")
-    await i.response.send_message("\n".join(lines)[:1990], ephemeral=True,
-                                  allowed_mentions=discord.AllowedMentions.none())
+    if len(rows) <= 15:
+        lines = []
+        for lid, t, author, created, ch_id, msg_id in rows:
+            link = f" https://discord.com/channels/{i.guild.id}/{ch_id}/{msg_id}" if ch_id and msg_id else ""
+            lines.append(f"**#{lid}** {LOG_TYPES.get(t, {}).get('label', t)} — <@{author}> — {str(created)[:16]}{link}")
+        await i.response.send_message("\n".join(lines)[:1990], ephemeral=True,
+                                      allowed_mentions=discord.AllowedMentions.none())
+    else:
+        view = PendingPaginator(rows, i.guild.id, i.user.id)
+        await i.response.send_message(view.get_page_text()[:1990], view=view, ephemeral=True,
+                                      allowed_mentions=discord.AllowedMentions.none())
 
 
 # ================================================================ الإعدادات
@@ -2143,8 +2222,6 @@ async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice
         await save_config_snapshot_json()
         await audit(f"🗑️ {i.user.mention} reset the log template for **{log_type.name}**", i.guild)
         await i.response.send_message(f"🔄 Template for **{log_type.name}** reset to default.", ephemeral=True)
-
-
 # ================================================================ النقط
 @bot.tree.command(name="set-log-points", description="Set log points for this server | نقاط اللوجات")
 @app_commands.choices(log=POINT_CHOICES)
@@ -2224,8 +2301,8 @@ async def ledger_mismatches(guild_id: int):
 
 
 @bot.tree.command(name="verify-points", description="Check balances against the points ledger | فحص الرصيد مقابل السجل")
-@app_commands.describe(fix="Overwrite balances with the ledger totals")
-async def verify_points(i: discord.Interaction, fix: bool = False):
+@app_commands.describe(fix="Overwrite balances with the ledger totals", confirm="Type FIX when repairing more than 5 balances")
+async def verify_points(i: discord.Interaction, fix: bool = False, confirm: Optional[str] = None):
     if not await gate(i, "verify-points", editor=True):
         return
     await i.response.defer(ephemeral=True)
@@ -2233,6 +2310,10 @@ async def verify_points(i: discord.Interaction, fix: bool = False):
     if not bad:
         return await i.followup.send("✅ All balances match the points ledger.", ephemeral=True)
     if fix:
+        if len(bad) > 5 and confirm != "FIX":
+            return await i.followup.send(
+                f"⚠️ Found **{len(bad)}** mismatches. To repair more than 5 at once, add `confirm:FIX`.",
+                ephemeral=True)
         async with aiosqlite.connect(DB) as db:
             for uid, _, led in bad:
                 await db.execute(
@@ -2277,7 +2358,7 @@ async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = 
     await i.response.send_message(msg, allowed_mentions=discord.AllowedMentions.none())
 
 
-@bot.tree.command(name="leaderboard", description="Top members (All time or Weekly) | المتصدرين")
+@bot.tree.command(name="leaderboard", description="Top members (All time / Season / Week) | المتصدرين")
 @app_commands.choices(period=PERIOD_CHOICES)
 async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choice[str]] = None):
     if not await gate(i, "leaderboard"):
@@ -2292,24 +2373,21 @@ async def leaderboard(i: discord.Interaction, period: Optional[app_commands.Choi
                 "SELECT user_id, SUM(points) AS total FROM point_events WHERE guild_id=? AND season_id=? "
                 "AND created_at >= ? GROUP BY user_id HAVING total>0 ORDER BY total DESC LIMIT 10",
                 (i.guild.id, season, (now_utc() - timedelta(days=7)).isoformat()))
-        else:
+        elif p_val == "season":
             cur = await db.execute(
                 "SELECT user_id, points FROM members WHERE guild_id=? AND points>0 ORDER BY points DESC LIMIT 10",
                 (i.guild.id,))
+        else:  # all-time = sum every point_event across every season
+            cur = await db.execute(
+                "SELECT user_id, SUM(points) AS total FROM point_events WHERE guild_id=? "
+                "GROUP BY user_id HAVING total>0 ORDER BY total DESC LIMIT 10", (i.guild.id,))
         rows = await cur.fetchall()
     if not rows:
         return await i.response.send_message(tr("no_points_yet", lang), ephemeral=True)
-    title = tr("lb_week", lang) if p_val == "week" else tr("lb_season", lang)
+    titles = {"week": tr("lb_week", lang), "season": tr("lb_season", lang), "all": tr("lb_all", lang)}
+    title = titles.get(p_val, tr("lb_all", lang))
     text = f"{flag} **{title}**\n\n" + "\n".join(f"**{n}.** <@{u}> — {p} pts" for n, (u, p) in enumerate(rows, 1))
     await i.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
-
-
-async def points_for_key(guild_id, key):
-    v = await get_setting(guild_id, "points:" + key)
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return DEFAULT_POINTS.get(key, 0)
 
 
 @bot.tree.command(name="rates", description="Show log points, ranks & rules | أسعار النقاط والرتب")
@@ -2318,9 +2396,19 @@ async def rates(i: discord.Interaction):
         return
     lang = await user_lang(i.guild.id, i.user.id)
     flag = LANGS.get(lang, ("", "🌐"))[1]
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute(
+            "SELECT key, value FROM settings WHERE guild_id=? AND key LIKE 'points:%'", (i.guild.id,))
+        stored_points = {}
+        for key, value in await cur.fetchall():
+            try:
+                stored_points[key[len("points:"):]] = int(value)
+            except (TypeError, ValueError):
+                pass
     lines = [f"{flag} ⚙️ **Rates ({BOT_VERSION})**\n\n**Log points:**"]
     for k, label in POINT_LABELS.items():
-        lines.append(f"- {label}: **{await points_for_key(i.guild.id, k)}** pts")
+        pts = stored_points.get(k, DEFAULT_POINTS.get(k, 0))
+        lines.append(f"- {label}: **{pts}** pts")
     lines.append("\n**Rank thresholds:**")
     lines += [f"- {n}: **{p}** pts" for n, p in await get_ladder(i.guild.id)]
     lines.append("\n**Rules:**")
@@ -2476,8 +2564,7 @@ async def inactive(i: discord.Interaction, days: app_commands.Range[int, 1, 365]
     if not await gate(i, "inactive", editor=True):
         return
     await i.response.defer(ephemeral=True)
-    if not i.guild.chunked:
-        await i.guild.chunk()
+    await _ensure_members(i.guild)
     cutoff = (now_utc() - timedelta(days=days)).isoformat()
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute(
@@ -2538,8 +2625,7 @@ async def season_reset(i: discord.Interaction, name: app_commands.Range[str, 1, 
 
     stripped = 0
     if reset_ranks:
-        if not i.guild.chunked:
-            await i.guild.chunk()
+        await _ensure_members(i.guild)
         lroles = [r for r in ladder_roles(i.guild) if r]
         for m in i.guild.members:
             held = [r for r in lroles if r in m.roles]
@@ -2613,7 +2699,7 @@ HELP_DATA = {
         ]),
         ("🏆 القسم 4 — النقاط والأوامر العامة", discord.Color.purple(), [
             ("/points", "عرض نقاطك وشريط تقدم الرتبة."),
-            ("/leaderboard", "عرض المتصدرين (الموسم أو الأسبوع)."),
+            ("/leaderboard", "عرض المتصدرين (الموسم أو الأسبوع أو كل الأوقات)."),
             ("/profile", "عرض بطاقتك الشخصية وإحصائياتك."),
             ("/rates", "عرض أسعار النقاط والرتب والقواعد."),
             ("/link", "ربط حساب روبلوكس الخاص بك."),
@@ -2664,7 +2750,7 @@ HELP_DATA = {
         ]),
         ("🏆 Part 4 — Points & Public", discord.Color.purple(), [
             ("/points", "Check your points and rank progress bar."),
-            ("/leaderboard", "Top members (all time or this week)."),
+            ("/leaderboard", "Top members (all time, season, or this week)."),
             ("/profile", "View member profile card."),
             ("/rates", "View points per log, ranks, and rules."),
             ("/link", "Link your Roblox username."),
@@ -2857,7 +2943,8 @@ async def post_update_notice(guild, target, preset_key="bot_patch", replace_prev
 async def check_and_notify_auto_update(guild: discord.Guild):
     if await raw_setting(guild.id, "state:bot_version") == BOT_VERSION:
         return
-    ch_id = await cfg_get(guild.id, "all", "update_channel")
+    ch_id = (await cfg_get(guild.id, "all", "update_channel")
+             or await cfg_get(guild.id, "all", "log_channel"))
     ch = guild.get_channel(ch_id) if ch_id else None
     if not ch:
         return
@@ -2874,8 +2961,12 @@ async def help_cmd(i: discord.Interaction):
         return
     lang = await user_lang(i.guild.id, i.user.id)
     await i.response.defer(ephemeral=True)
-    for e in get_help_embeds(lang):
-        await i.followup.send(embed=e, ephemeral=True)
+    embeds = get_help_embeds(lang)
+    if len(embeds) <= 10:
+        await i.followup.send(embeds=embeds, ephemeral=True)
+    else:
+        for e in embeds[:10]:
+            await i.followup.send(embed=e, ephemeral=True)
 
 
 @bot.tree.command(name="send-help-panel", description="Post the manual in a channel | إرسال الشرح في قناة")
@@ -2994,6 +3085,9 @@ async def restore_settings_json(guild_id: int, raw: bytes) -> dict:
         raise ValueError("Not a valid JSON file.")
     if not isinstance(data, dict):
         raise ValueError("Unexpected file structure.")
+    file_version = data.get("version")
+    if file_version and file_version != BOT_VERSION:
+        print(f"⚠️ Restoring settings from version {file_version} into {BOT_VERSION} — schema may differ.")
     valid_types = set(LOG_TYPES) | {"all"}
     counts = {"settings": 0, "guild_cfg": 0, "role_perms": 0, "cmd_roles": 0, "skipped": 0}
 
@@ -3253,7 +3347,7 @@ def _mentions_or(ids, empty_text):
     for n, member_id in enumerate(ids, 1):
         line = f"**{n}.** <@{member_id}>"
         candidate = "\n".join(lines + [line])
-        if len(candidate) > 900:
+        if len(candidate) > 950:
             remaining = len(ids) - len(lines)
             suffix = f"\n…and {remaining} more" if remaining > 0 else ""
             return "\n".join(lines) + suffix
@@ -3273,15 +3367,16 @@ class CrewSelect(discord.ui.Select):
         lang = await user_lang(i.guild.id, i.user.id)
         async with aiosqlite.connect(DB) as db:
             cur = await db.execute(
-                "SELECT owner_id, captains_data, team_z_data, team_y_data, team_x_data, team_s_data, team_a_data, "
-                "created_at, team_z_commanders_data, team_y_commanders_data, team_x_commanders_data, "
-                "team_s_commanders_data, team_a_commanders_data FROM crews WHERE guild_id=? AND crew_name=?",
-                (i.guild.id, name))
+                "SELECT owner_id, captains_data, voice_captains_data, "
+                "team_z_data, team_y_data, team_x_data, team_s_data, team_a_data, "
+                "created_at, team_z_commanders_data, team_y_commanders_data, "
+                "team_x_commanders_data, team_s_commanders_data, team_a_commanders_data "
+                "FROM crews WHERE guild_id=? AND crew_name=?", (i.guild.id, name))
             row = await cur.fetchone()
         if not row:
             return await i.response.send_message(tr("crew_not_found", lang), ephemeral=True)
-        owner, cap, *rest = row
-        teams, created_at, commanders = rest[:5], rest[5], rest[6:11]
+        owner, cap, vcap, tz, ty, tx, ts, ta, created_at, *commanders = row
+        teams = [tz, ty, tx, ts, ta]
         none, empty = tr("none", lang), tr("empty", lang)
         flag = LANGS.get(lang, ("", "🌐"))[1]
         e = discord.Embed(
@@ -3290,6 +3385,7 @@ class CrewSelect(discord.ui.Select):
             color=discord.Color.from_rgb(184, 139, 48), timestamp=now_utc())
         e.add_field(name="👑 Owner", value=f"<@{owner}>" if owner else "—", inline=True)
         e.add_field(name="⚔️ Captains", value=_mentions_or(_id_list(cap), none), inline=True)
+        e.add_field(name="🎙️ Voice Captains", value=_mentions_or(_id_list(vcap), none), inline=True)
         for (col, label), raw, commander_raw in zip(CREW_TEAMS, teams, commanders):
             members = _id_list(raw)
             leaders = _id_list(commander_raw)
@@ -3381,6 +3477,7 @@ async def resolve_crew_members(guild: discord.Guild, raw: Optional[str]):
 @app_commands.describe(
     crew_name="Crew name", owner_member="Crew owner",
     captains="Captain mentions/IDs",
+    voice_captains="Voice captains mentions/IDs",
     team_z_members="Team Z players", team_z_commanders="Team Z commanders",
     team_y_members="Team Y players", team_y_commanders="Team Y commanders",
     team_x_members="Team X players", team_x_commanders="Team X commanders",
@@ -3391,6 +3488,7 @@ async def create_new_crew(
         crew_name: app_commands.Range[str, 2, 40],
         owner_member: discord.Member,
         captains: Optional[app_commands.Range[str, 1, 1000]] = None,
+        voice_captains: Optional[app_commands.Range[str, 1, 1000]] = None,
         team_z_members: Optional[app_commands.Range[str, 1, 1000]] = None,
         team_z_commanders: Optional[app_commands.Range[str, 1, 1000]] = None,
         team_y_members: Optional[app_commands.Range[str, 1, 1000]] = None,
@@ -3410,8 +3508,10 @@ async def create_new_crew(
     if owner_member.bot:
         return await i.response.send_message(tr("crew_bad_owner", lang), ephemeral=True)
 
-    raw_groups = (captains, team_z_members, team_y_members, team_x_members, team_s_members, team_a_members,
-                  team_z_commanders, team_y_commanders, team_x_commanders, team_s_commanders, team_a_commanders)
+    raw_groups = (captains, voice_captains, team_z_members, team_y_members, team_x_members,
+                  team_s_members, team_a_members,
+                  team_z_commanders, team_y_commanders, team_x_commanders,
+                  team_s_commanders, team_a_commanders)
     try:
         groups = [await resolve_crew_members(i.guild, raw) for raw in raw_groups]
     except ValueError:
@@ -3429,10 +3529,11 @@ async def create_new_crew(
             return await i.response.send_message(tr("crew_limit", lang, max=MAX_CREWS_PER_GUILD), ephemeral=True)
         try:
             await db.execute(
-                "INSERT INTO crews(guild_id, crew_name, owner_id, captains_data, team_z_data, team_y_data, "
-                "team_x_data, team_s_data, team_a_data, team_z_commanders_data, team_y_commanders_data, "
-                "team_x_commanders_data, team_s_commanders_data, team_a_commanders_data, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO crews(guild_id, crew_name, owner_id, captains_data, voice_captains_data, "
+                "team_z_data, team_y_data, team_x_data, team_s_data, team_a_data, "
+                "team_z_commanders_data, team_y_commanders_data, team_x_commanders_data, "
+                "team_s_commanders_data, team_a_commanders_data, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (i.guild.id, crew_name, owner_member.id, *[json.dumps(x) for x in lists], now_utc().isoformat()))
             await db.commit()
         except sqlite3.IntegrityError:
@@ -3547,28 +3648,46 @@ async def run_reminders():
 async def run_backup():
     if not owner_id():
         return
-    hours = [h for h in [await rule(g.id, "backup_hours") for g in bot.guilds] if h > 0]
-    if not hours:
-        return
-    cycle = min(hours) * 3600
-    last = await raw_setting(0, "state:last_backup")
     now = now_utc()
-    if last:
+    due = []
+    for guild in bot.guilds:
         try:
-            if (now - dt.datetime.fromisoformat(last)).total_seconds() < cycle:
-                return
-        except ValueError:
+            hours = await rule(guild.id, "backup_hours")
+            if hours <= 0:
+                continue
+            cycle = hours * 3600
+            last = await raw_setting(guild.id, "state:last_backup")
+            if last:
+                try:
+                    if (now - dt.datetime.fromisoformat(last)).total_seconds() < cycle:
+                        continue
+                except ValueError:
+                    pass
+            due.append(guild)
+        except Exception as e:
+            print(f"⚠️ Auto backup check error in guild {guild.id}: {e}")
+    if not due:
+        return
+    for guild in due:
+        try:
+            await set_setting(guild.id, "state:last_backup", now.isoformat())
+        except Exception:
             pass
-    await set_setting(0, "state:last_backup", now.isoformat())
-    path = os.path.join(tempfile.gettempdir(), f"crewbot-auto-{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}.db")
+    path = os.path.join(tempfile.gettempdir(),
+                        f"crewbot-auto-{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}.db")
     try:
         await asyncio.to_thread(_backup_file, path)
         payload = await asyncio.to_thread(_read_bytes, path)
-        await dm_owner("🗄️ **Scheduled backup** (full database):",
+        names = ", ".join(f"**{g.name}**" for g in due[:5])
+        extra = f" (+{len(due) - 5} more)" if len(due) > 5 else ""
+        await dm_owner(f"🗄️ **Scheduled backup** — due for: {names}{extra}",
                        file=discord.File(io.BytesIO(payload), filename=os.path.basename(path)))
     finally:
         if os.path.exists(path):
-            os.unlink(path)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 async def run_weekly():
