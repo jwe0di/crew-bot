@@ -11,7 +11,7 @@ import tempfile
 import threading
 import uuid
 from datetime import timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -26,7 +26,7 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v8.0.0 (Final Secure)"
+BOT_VERSION = "v8.0.1 (Security Hardening)"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -45,7 +45,7 @@ def run_dummy_server():
             self.wfile.write(f"DragonSlayerBot {BOT_VERSION} is online!".encode())
         def log_message(self, format, *args): pass
     port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 # ================================================================ الإعدادات الأساسية
 REQUIRED_TYPES = ("war", "1v1", "2v2", "training", "tryout")
@@ -227,6 +227,8 @@ CREATE TABLE IF NOT EXISTS crews(
 );
 CREATE TABLE IF NOT EXISTS custom_settings(guild_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(guild_id, key));
 CREATE TABLE IF NOT EXISTS custom_messages(guild_id INTEGER, key TEXT, title TEXT, description TEXT, color TEXT, PRIMARY KEY(guild_id, key));
+CREATE TABLE IF NOT EXISTS custom_roles(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_id INTEGER NOT NULL UNIQUE, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS temp_voice_rooms(guild_id INTEGER NOT NULL, channel_id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS streaks(guild_id INTEGER, user_id INTEGER, current_streak INTEGER DEFAULT 0, max_streak INTEGER DEFAULT 0, last_log_date TEXT, PRIMARY KEY(guild_id, user_id));
 CREATE TABLE IF NOT EXISTS shop_items(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, name TEXT, price INTEGER, role_id INTEGER, description TEXT);
 CREATE TABLE IF NOT EXISTS achievements(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, name TEXT, description TEXT, required_points INTEGER, reward_points INTEGER DEFAULT 0, role_id INTEGER);
@@ -576,7 +578,8 @@ async def send_notification(guild, event_type, title, desc, color=discord.Color.
 
 # ================================================================ الصلاحيات (بما فيها المؤقتة)
 def has_role(member, names) -> bool:
-    return any(n.lower() in r.name.lower() for r in getattr(member, "roles", []) for n in names)
+    normalized = {str(n).strip().casefold() for n in names if str(n).strip()}
+    return any(r.name.strip().casefold() in normalized for r in getattr(member, "roles", []))
 
 def is_admin(member) -> bool:
     if not isinstance(member, discord.Member):
@@ -838,7 +841,6 @@ _SPARK = _EMO.get("spark", "<a:emoji_6:1568348105781416008>")
 DIVIDER = _EMO.get("divider", f"{_SPARK}   ●▬▬▬▬▬▬▬▬▬▬▬☭   ☭▬▬▬▬▬▬▬▬▬▬▬●   {_SPARK}")
 MSG_LIMIT = 1900
 
-# القوالب الافتراضية لكل لوج (هتظهر في أمر set-log-template)
 DEFAULT_TEMPLATES = {
     "war": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Fighters:**\n{ARROW} {my_team}\n\n{DIVIDER}\n\n{MOON} **{crew} Fighters:**\n{ARROW} {their_team}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{participants_block}{flags_block}",
     "1v1": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Fighter:**\n{ARROW} {my_fighter}\n\n{DIVIDER}\n\n{MOON} **Opponent:**\n{ARROW} {opponent}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{flags_block}",
@@ -1806,7 +1808,6 @@ async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice
         await audit(f"🎨 {i.user.mention} updated the log template for **{log_type.name}**", i.guild)
         await i.response.send_message(f"✅ Template updated for **{log_type.name}**. / تم تحديث قالب اللوج.", ephemeral=True)
     else:
-        # بيجيب القالب الحالي (سواء المخصص أو الافتراضي) عشان الإدارة تنسخه وتعدل عليه
         current_template = await get_custom_template(i.guild.id, log_type.value)
         msg = (
             f"📝 **Current Template for {log_type.name}:**\n"
@@ -2096,7 +2097,12 @@ def _validate_sqlite(path):
         return False
     finally:
         con.close()
-    return ok and {"logs", "members"} <= tables
+    required = {
+        "settings", "members", "logs", "hashes", "guild_cfg", "role_perms",
+        "point_events", "cmd_roles", "cmd_users", "crews", "tickets",
+        "shop_items", "achievements", "quests", "events"
+    }
+    return ok and required.issubset(tables)
 
 def _restore_into_live(src_path):
     src = sqlite3.connect(src_path)
@@ -2116,9 +2122,17 @@ async def restore_database(raw: bytes):
         if not await asyncio.to_thread(_validate_sqlite, tmp):
             raise ValueError("The file is not a valid DragonSlayerBot database. / الملف ليس قاعدة بيانات صالحة.")
         await asyncio.to_thread(_backup_file, safety)
-        await asyncio.to_thread(_restore_into_live, tmp)
-        await init_db()
-        return True
+        try:
+            if not await asyncio.to_thread(_validate_sqlite, safety):
+                raise RuntimeError("Could not create a valid pre-restore safety backup.")
+            await asyncio.to_thread(_restore_into_live, tmp)
+            await init_db()
+            return True
+        except Exception:
+            if os.path.exists(safety) and await asyncio.to_thread(_validate_sqlite, safety):
+                await asyncio.to_thread(_restore_into_live, safety)
+                await init_db()
+            raise
     finally:
         for path in (tmp, safety):
             if os.path.exists(path):
@@ -2707,18 +2721,25 @@ async def lfg_cmd(i: discord.Interaction, mode: app_commands.Choice[str], target
         await i.response.send_message("✅ Sent to channel. / تم الإرسال للقناة.", ephemeral=True)
     else:
         await i.response.defer(ephemeral=True)
+        
+        # تحديث كاش الأعضاء عشان يلاقي الكل
+        await _ensure_members(i.guild)
+        
         count = 0
-        if len(role.members) > 50:
-            return await i.followup.send("❌ Too many members (>50). Use channel mode. / عدد الأعضاء كبير جداً. استخدم قناة عامة.", ephemeral=True)
-            
+        failed = 0
+        
         for member in role.members:
             if member.bot or member.id == i.user.id: continue
             try:
                 await member.send(embed=embed)
                 count += 1
-            except discord.HTTPException: pass
-            await asyncio.sleep(0.3)
-        await i.followup.send(f"✅ Sent to {count} members in DM. / تم الإرسال لـ {count} عضو في الخاص.", ephemeral=True)
+            except discord.HTTPException:
+                failed += 1
+            
+            # تأخير نص ثانية عشان ديسكورد ميعملش حظر
+            await asyncio.sleep(0.5) 
+            
+        await i.followup.send(f"✅ Sent to {count} members in DM. (Failed: {failed})\nتم الإرسال لـ {count} عضو في الخاص. (فشل إرسال لـ {failed})", ephemeral=True)
 
 @bot.tree.command(name="daily", description="Claim daily bonus / الحصول على المكافأة اليومية")
 @app_commands.checks.cooldown(1, 10.0)
@@ -2833,54 +2854,88 @@ async def embed_builder(i: discord.Interaction, title: str, description: str, co
 @bot.tree.command(name="create-custom-role", description="Create custom role / إنشاء رتبة مخصصة")
 @app_commands.checks.cooldown(1, 60.0)
 @app_commands.choices(color=COLOR_CHOICES)
-async def create_custom_role(i: discord.Interaction, name: str, color: app_commands.Choice[str]):
-    if not await gate(i, "create-custom-role"): return
-    
+async def create_custom_role(i: discord.Interaction, name: app_commands.Range[str, 2, 32], color: app_commands.Choice[str]):
+    if not await gate(i, "create-custom-role"):
+        return
+    if not isinstance(i.user, discord.Member) or not i.guild:
+        return await i.response.send_message(tr("server_only"), ephemeral=True)
+
+    clean_name = name.strip()
     forbidden = ["admin", "mod", "commander", "admiral", "owner", "lvl", "staff", "empyrean", "apotheosis"]
-    if any(w in name.lower() for w in forbidden) or len(name) > 32:
-        return await i.response.send_message("❌ Name contains forbidden words or is too long. / الاسم يحتوي على كلمات محظورة أو طويل جداً.", ephemeral=True)
-        
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT COUNT(*) FROM settings WHERE guild_id=? AND key=?", (i.guild.id, f"custom_role:{i.user.id}"))
-        if (await cur.fetchone())[0] >= 3:
-            return await i.response.send_message("❌ Max 3 custom roles reached. / لقد وصلت للحد الأقصى (3 رتب).", ephemeral=True)
+    if not clean_name or any(w in clean_name.casefold() for w in forbidden):
+        return await i.response.send_message("❌ Name contains forbidden words. / الاسم يحتوي على كلمات محظورة.", ephemeral=True)
 
     is_free = is_admin(i.user) or await has_temp_admin(i.user)
     price = 0 if is_free else int(await get_custom_val(i.guild.id, "custom_role_price", 500))
-    
-    if not is_free:
-        async with aiosqlite.connect(DB) as db:
-            cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, i.user.id))
-            points = (await cur.fetchone() or [0])[0]
-            if points < price: return await i.response.send_message(tr("shop_no_points", price=price, points=points), ephemeral=True)
-    
+    if price < 0 or price > 1_000_000_000:
+        return await i.response.send_message("❌ Store price configuration is invalid. / إعداد سعر المتجر غير صالح.", ephemeral=True)
+
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM custom_roles WHERE guild_id=? AND user_id=?", (i.guild.id, i.user.id))
+        if (await cur.fetchone())[0] >= 3:
+            return await i.response.send_message("❌ Max 3 custom roles reached. / وصلت للحد الأقصى (3 رتب).", ephemeral=True)
+        cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, i.user.id))
+        points = (await cur.fetchone() or [0])[0]
+    if not is_free and points < price:
+        return await i.response.send_message(tr("shop_no_points", price=price, points=points), ephemeral=True)
+
     try:
         role_color = int(color.value, 16)
-        role = await i.guild.create_role(name=name, color=discord.Color(role_color), reason="Custom Role Purchase")
-        
+        role = await i.guild.create_role(name=clean_name, color=discord.Color(role_color), reason="Custom Role Purchase")
+    except (ValueError, discord.Forbidden, discord.HTTPException):
+        return await i.response.send_message("❌ Could not create the role. Check the bot's Manage Roles permission and role hierarchy. / تعذر إنشاء الرتبة، راجع صلاحيات البوت وترتيب الرتب.", ephemeral=True)
+
+    try:
         async with aiosqlite.connect(DB) as db:
             await db.execute("BEGIN IMMEDIATE")
-            try:
-                if not is_free:
-                    cur = await db.execute("UPDATE members SET points = points - ? WHERE guild_id=? AND user_id=? AND points >= ?", (price, i.guild.id, i.user.id, price))
-                    if cur.rowcount == 0:
-                        await db.rollback()
-                        await role.delete()
-                        return await i.response.send_message("❌ Insufficient balance. / رصيدك غير كافٍ.", ephemeral=True)
-                    
-                    await db.execute("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, i.user.id, -price, now_utc().isoformat(), "shop", await get_current_season(i.guild.id)))
-                
-                await db.execute("INSERT INTO settings(guild_id, key, value) VALUES(?,?,?)", (i.guild.id, f"custom_role:{i.user.id}", str(role.id)))
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                await role.delete()
-                return await i.response.send_message("❌ Error, everything refunded. / حدث خطأ، تم استرجاع كل شيء.", ephemeral=True)
-                
-        await i.user.add_roles(role)
-        await i.response.send_message(tr("role_created_free" if is_free else "role_created", role=role.mention, member=i.user.mention), ephemeral=True)
-    except Exception as e:
-        await i.response.send_message(f"❌ Failed to create role: {e}", ephemeral=True)
+            if not is_free:
+                cur = await db.execute(
+                    "UPDATE members SET points=points-? WHERE guild_id=? AND user_id=? AND points>=?",
+                    (price, i.guild.id, i.user.id, price)
+                )
+                if cur.rowcount != 1:
+                    await db.rollback()
+                    await role.delete(reason="Custom role purchase rolled back")
+                    return await i.response.send_message("❌ Insufficient balance. / رصيدك غير كافٍ.", ephemeral=True)
+                await db.execute(
+                    "INSERT INTO point_events(guild_id,user_id,points,created_at,type,season_id) VALUES(?,?,?,?,?,?)",
+                    (i.guild.id, i.user.id, -price, now_utc().isoformat(), "shop", await get_current_season(i.guild.id))
+                )
+            await db.execute(
+                "INSERT INTO custom_roles(guild_id,user_id,role_id,created_at) VALUES(?,?,?,?)",
+                (i.guild.id, i.user.id, role.id, now_utc().isoformat())
+            )
+            await db.commit()
+    except Exception:
+        try:
+            await role.delete(reason="Custom role purchase rolled back after database error")
+        except discord.HTTPException:
+            pass
+        return await i.response.send_message("❌ Purchase failed; no charge was committed. / فشلت العملية ولم يتم اعتماد الخصم.", ephemeral=True)
+
+    try:
+        await i.user.add_roles(role, reason="Custom role purchase")
+    except (discord.Forbidden, discord.HTTPException):
+        async with aiosqlite.connect(DB) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("DELETE FROM custom_roles WHERE role_id=? AND guild_id=?", (role.id, i.guild.id))
+            if not is_free:
+                await db.execute("UPDATE members SET points=points+? WHERE guild_id=? AND user_id=?", (price, i.guild.id, i.user.id))
+                await db.execute(
+                    "INSERT INTO point_events(guild_id,user_id,points,created_at,type,season_id) VALUES(?,?,?,?,?,?)",
+                    (i.guild.id, i.user.id, price, now_utc().isoformat(), "shop_refund", await get_current_season(i.guild.id))
+                )
+            await db.commit()
+        try:
+            await role.delete(reason="Role assignment failed; purchase refunded")
+        except discord.HTTPException:
+            pass
+        return await i.response.send_message("❌ Could not assign the role; the purchase was refunded. / تعذر منح الرتبة وتم رد النقاط.", ephemeral=True)
+
+    await i.response.send_message(
+        tr("role_created_free" if is_free else "role_created", role=role.mention, member=i.user.mention),
+        ephemeral=True
+    )
 
 @bot.tree.command(name="create-temp-voice", description="Create temp voice / إنشاء غرفة صوتية مؤقتة")
 @app_commands.checks.cooldown(1, 60.0)
@@ -2927,17 +2982,31 @@ async def on_voice_state_update(member, before, after):
         if str(after.channel.id) == trigger_id_str:
             try:
                 new_channel = await guild.create_voice_channel(name=f"🔊 Room: {member.display_name}", category=after.channel.category)
+                async with aiosqlite.connect(DB) as db:
+                    await db.execute(
+                        "INSERT INTO temp_voice_rooms(guild_id,channel_id,owner_id,created_at) VALUES(?,?,?,?)",
+                        (guild.id, new_channel.id, member.id, now_utc().isoformat())
+                    )
+                    await db.commit()
                 await new_channel.set_permissions(member, connect=True, manage_channels=True)
                 await member.move_to(new_channel)
             except discord.HTTPException: pass
 
     if before.channel and before.channel != after.channel:
-        if before.channel.name.startswith("🔊 Room:"):
-            if len(before.channel.members) == 0:
-                trigger_id_str = await get_custom_val(guild.id, "temp_voice_trigger", "0")
-                if before.channel.id != int(trigger_id_str):
-                    try: await before.channel.delete()
-                    except discord.HTTPException: pass
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute(
+                "SELECT channel_id FROM temp_voice_rooms WHERE guild_id=? AND channel_id=?",
+                (guild.id, before.channel.id)
+            )
+            is_managed_room = await cur.fetchone()
+        if is_managed_room and len(before.channel.members) == 0:
+            try:
+                await before.channel.delete(reason="Temporary voice room became empty")
+            except discord.HTTPException:
+                return
+            async with aiosqlite.connect(DB) as db:
+                await db.execute("DELETE FROM temp_voice_rooms WHERE guild_id=? AND channel_id=?", (guild.id, before.channel.id))
+                await db.commit()
 
 # ================================================================ إصلاح الداتابيز للمهام
 async def fix_db_columns():
