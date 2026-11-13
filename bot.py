@@ -26,14 +26,22 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v8.0.1 (Security Hardening)"
+BOT_VERSION = "v8.0.1 (Security Hardened)"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
+# [PATCH 2] حماية ملف الداتابيز
+try:
+    if os.path.exists(DB):
+        os.chmod(DB, 0o600)
+except (OSError, NotImplementedError):
+    pass
+
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".mov", ".webm", ".mkv"}
 MAX_FILE_SIZE = 25 * 1024 * 1024
-MAX_TOTAL_FILES_SIZE = 50 * 1024 * 1024
+# [PATCH 1] تم تقليل الحجم من 50MB لـ 30MB لمنع استهلاك الذاكرة
+MAX_TOTAL_FILES_SIZE = 30 * 1024 * 1024
 MAX_FILES_COUNT = 5
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 
@@ -108,8 +116,8 @@ UPDATE_PRESETS = {
         "label": f"🤖 Release notes {BOT_VERSION}",
         "title_en": f"DragonSlayerBot {BOT_VERSION}",
         "title_ar": f"إصدار البوت {BOT_VERSION}",
-        "desc_en": ("• Bilingual system (English / Arabic).\n• V8.0: Temporary Admin permissions, Secure Temp Voice, LFG Roles, Cooldowns."),
-        "desc_ar": ("• نظام مزدوج اللغة (إنجليزي / عربي).\n• تحديث V8.0: صلاحيات إدارية مؤقتة، غرف صوتية آمنة، رتب LFG، كول داون."),
+        "desc_en": ("• Bilingual system (English / Arabic).\n• V8.0.1: Security hardening, Temp Admin protection, LFG abuse prevention."),
+        "desc_ar": ("• نظام مزدوج اللغة (إنجليزي / عربي).\n• تحديث V8.0.1: تحسينات أمنية، حماية Temp Admin، حماية LFG من السبام."),
     }
 }
 UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"][:100], value=k) for k, v in UPDATE_PRESETS.items()]
@@ -124,7 +132,7 @@ ALL_BOT_COMMANDS = [
     "grant-temp-admin", "revoke-temp-admin"
 ]
 
-# ================================================================ النصوص المدمجة (English / Arabic)
+# ================================================================ النصوص (Bilingual)
 TEXTS = {
     "no_perm": "❌ No permission / مش معاك صلاحية.",
     "no_role": "❌ Missing required role / مش معاك الرتبة المطلوبة.",
@@ -152,11 +160,11 @@ TEXTS = {
     "too_many_files": "❌ Too many files (max {max}) / ملفات كتير جداً (الحد {max}).",
     "bad_file_ext": "❌ File `{name}` unsupported / صيغة الملف `{name}` غير مدعومة.",
     "file_too_big": "❌ File `{name}` > 25 MB / حجم الملف `{name}` أكبر من 25 ميجا.",
-    "total_too_big": "❌ Total size exceeds 50 MB / إجمالي الحجم تخطى 50 ميجا.",
+    "total_too_big": "❌ Total size exceeds 30 MB / إجمالي الحجم تخطى 30 ميجا.",
     "points_msg": "💰 {member}'s balance: **{total}** points / رصيد {member}: **{total}** نقطة.",
     "no_points_yet": "ℹ️ No points recorded yet / مفيش نقاط مسجلة لسه.",
     "lb_week": "📊 Weekly Leaderboard / متصدري الأسبوع",
-    "lb_season": "🏆 Season Leaderboard / متصدري الموسم",
+    "lb_season": "🏆 Season Leaderboard / متصدرى الموسم",
     "lb_all": "📈 All-Time Leaderboard / متصدري كل الأوقات",
     "no_pending": "✅ No pending logs / مفيش لوجات منتظرة.",
     "no_my_logs": "ℹ️ No logs recorded yet / مفيش لوجات ليك لسه.",
@@ -282,7 +290,23 @@ def owner_id():
     except ValueError:
         return 0
 
+# [PATCH 3] Whitelist لأسماء الجداول المسموح بها
+_ALLOWED_TABLES = {
+    "settings", "members", "guild_channels", "logs", "hashes",
+    "guild_cfg", "role_perms", "point_events", "links",
+    "season_archive", "cmd_roles", "cmd_users", "crews",
+    "custom_settings", "custom_messages", "custom_roles",
+    "temp_voice_rooms", "streaks", "shop_items", "achievements",
+    "user_achievements", "quests", "events", "tickets",
+    "daily_bonus", "bios", "notif_settings", "lfg_allowed_roles",
+    "votes", "temp_perms",
+    "settings_legacy", "members_legacy", "links_legacy",
+    "season_archive_legacy", "point_events_legacy",
+}
+
 async def table_columns(db, table):
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"Invalid table name: {table}")
     cur = await db.execute(f"PRAGMA table_info({table})")
     return [r[1] for r in await cur.fetchall()]
 
@@ -576,7 +600,7 @@ async def send_notification(guild, event_type, title, desc, color=discord.Color.
                     pass
                 await asyncio.sleep(0.5)
 
-# ================================================================ الصلاحيات (بما فيها المؤقتة)
+# ================================================================ الصلاحيات (بما فيها الحماية الجديدة)
 def has_role(member, names) -> bool:
     normalized = {str(n).strip().casefold() for n in names if str(n).strip()}
     return any(r.name.strip().casefold() in normalized for r in getattr(member, "roles", []))
@@ -588,27 +612,48 @@ def is_admin(member) -> bool:
         return True
     return member.guild_permissions.administrator
 
+# [PATCH 4] قائمة الأوامر اللي مش مسموح للـ Temp Admin يستخدمها
+TEMP_ADMIN_BLOCKED_COMMANDS = {
+    "grant-temp-admin",
+    "revoke-temp-admin",
+    "backup",
+    "restore-backup",
+    "set-cmd-perms",
+    "setchannel",
+    "setrule",
+    "settings",
+    "purge",
+    "sync",
+}
+
 async def has_temp_admin(member) -> bool:
     if not member.guild:
         return False
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT expires_at FROM temp_perms WHERE guild_id=? AND user_id=?", (member.guild.id, member.id))
         row = await cur.fetchone()
-    if not row:
-        return False
-    try:
-        expires = dt.datetime.fromisoformat(row[0])
-        if now_utc() > expires:
-            async with aiosqlite.connect(DB) as db:
+        if not row:
+            return False
+        try:
+            expires = dt.datetime.fromisoformat(row[0])
+            if now_utc() > expires:
                 await db.execute("DELETE FROM temp_perms WHERE guild_id=? AND user_id=?", (member.guild.id, member.id))
                 await db.commit()
+                return False
+            return True
+        except ValueError:
             return False
-        return True
-    except ValueError:
-        return False
 
 async def is_editor(member) -> bool:
     return is_admin(member) or await has_temp_admin(member) or has_role(member, EDITOR_ROLES)
+
+# [PATCH 5] دالة جديدة عشان تحمي الـ Temp Admin من الأوامر الحساسة
+async def is_editor_for_command(member, cmd_name: str) -> bool:
+    if is_admin(member):
+        return True
+    if await has_temp_admin(member):
+        return cmd_name not in TEMP_ADMIN_BLOCKED_COMMANDS
+    return has_role(member, EDITOR_ROLES)
 
 async def can_review(member, log_type) -> bool:
     if is_admin(member) or await has_temp_admin(member):
@@ -657,6 +702,7 @@ async def check_cmd_perm(i: discord.Interaction, cmd_name: str) -> bool:
         
     return False
 
+# [PATCH 6] تحديث gate عشان يستخدم الحماية الجديدة
 async def gate(i: discord.Interaction, cmd_name: str, editor=False) -> bool:
     if not i.guild or not isinstance(i.user, discord.Member):
         await i.response.send_message(tr("server_only"), ephemeral=True)
@@ -664,7 +710,7 @@ async def gate(i: discord.Interaction, cmd_name: str, editor=False) -> bool:
     if not await check_cmd_perm(i, cmd_name):
         await i.response.send_message(tr("no_role"), ephemeral=True)
         return False
-    if editor and not await is_editor(i.user):
+    if editor and not await is_editor_for_command(i.user, cmd_name):
         await i.response.send_message(tr("no_perm"), ephemeral=True)
         return False
     return True
@@ -831,7 +877,7 @@ bot = CrewBot()
 async def on_app_command_error(i: discord.Interaction, error):
     await report_error(i, error)
 
-# ================================================================ شكل اللوج الثابت (English Only + Templates)
+# ================================================================ شكل اللوج الثابت
 _EMO = getattr(config, "EMOJIS", {}) or {}
 ANGEL = _EMO.get("angel", "<:emoji_2:1568348048906649652>")
 MOON = _EMO.get("bullet", "<a:emoji_15:1568348248522100757>")
@@ -1009,7 +1055,7 @@ async def revoke_temp_admin(i: discord.Interaction, member: discord.Member):
     await audit(f"🚫 {i.user.mention} revoked Temp Admin from {member.mention}.", i.guild)
     await i.response.send_message(f"✅ Revoked temporary admin from {member.mention}. / تم سحب الصلاحيات المؤقتة من {member.mention}.", ephemeral=True)
 
-# ================================================================ أنظمة الستريك والإنجازات (للاستخدام في accept_log)
+# ================================================================ أنظمة الستريك والإنجازات
 async def update_streak(guild_id, user_id):
     today, yesterday = now_utc().date().isoformat(), (now_utc().date() - timedelta(days=1)).isoformat()
     async with aiosqlite.connect(DB) as db:
@@ -1308,7 +1354,8 @@ async def resubmit(i: discord.Interaction, log_id: int):
     if child:
         return await i.response.send_message(f"This log was already resubmitted as #{child[0]}.", ephemeral=True)
         
-    data = json.loads(row["data"])
+    # [PATCH 9a] حماية من json.loads(None)
+    data = json.loads(row["data"] or "{}")
     files = []
     try:
         ch = i.guild.get_channel(row["review_channel"]) if row["review_channel"] else None
@@ -1361,7 +1408,8 @@ async def revoke_log(i: discord.Interaction, log_id: int, reason: app_commands.R
             print(f"❌ revoke DB error: {e}")
             return await i.followup.send(tr("db_err"), ephemeral=True)
 
-    data = json.loads(row["data"])
+    # [PATCH 9a]
+    data = json.loads(row["data"] or "{}")
     custom_tmpl = await get_custom_template(i.guild.id, row["type"])
     text = render(log_id, row["type"], row["author_id"], data, row["result"], None, "revoked", reviewer_id=i.user.id, reason=reason, custom_template=custom_tmpl)
     
@@ -1423,7 +1471,9 @@ async def accept_log(i: discord.Interaction):
         
     await i.response.defer()
     log_id = row["id"]
-    data = json.loads(row["data"])
+    
+    # [PATCH 9a]
+    data = json.loads(row["data"] or "{}")
     flags = json.loads(row["flags"] or "[]")
     pts = await points_for(i.guild.id, row["type"], row["result"])
     recips = await recipients_for(row, data)
@@ -1542,7 +1592,8 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason / سبب الرفض"
                 print(f"❌ reject DB error: {e}")
                 return await i.followup.send(tr("db_err"), ephemeral=True)
 
-        data = json.loads(row["data"])
+        # [PATCH 9a]
+        data = json.loads(row["data"] or "{}")
         flags = json.loads(row["flags"] or "[]")
         custom_tmpl = await get_custom_template(i.guild.id, row["type"])
         text = render(self.log_id, row["type"], row["author_id"], data, row["result"], flags, "rejected", reviewer_id=i.user.id, reason=self.reason.value, custom_template=custom_tmpl)
@@ -1596,7 +1647,8 @@ class ReviewView(discord.ui.View):
                     await db.rollback()
                     return await i.response.send_message(tr("log_already_reviewed"), ephemeral=True)
                     
-                data = json.loads(log_row[1])
+                # [PATCH 9b]
+                data = json.loads(log_row[1] or "{}")
                 participants = [int(x) for x in data.get("participants", [])]
                 if i.user.id not in participants:
                     await db.rollback()
@@ -2225,6 +2277,32 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
         await i.followup.send(f"✅ Update published to {target.mention}. / تم نشر التحديث.", ephemeral=True)
     except discord.HTTPException as e:
         await i.followup.send(f"❌ Failed to send the update: {e}", ephemeral=True)
+
+# ================================================================ الإشعارات الذكية (مع patch 7)
+@bot.tree.command(name="set-notification", description="Set where notifications go / تحديد مكان إرسال الإشعارات")
+@app_commands.checks.cooldown(1, 5.0)
+@app_commands.choices(event_type=[app_commands.Choice(name="Auto-Quests / المهام اليومية", value="quests"), app_commands.Choice(name="Daily Bonus / المكافأة اليومية", value="daily")], mode=[app_commands.Choice(name="Channel / قناة عامة", value="channel"), app_commands.Choice(name="DM / رسالة خاصة", value="dm")])
+async def set_notification(i: discord.Interaction, event_type: app_commands.Choice[str], mode: app_commands.Choice[str], target: str):
+    if not await gate(i, "set-notification", editor=True): return
+    
+    # [PATCH 7] try/except لحماية من input غير صالح
+    target_id = 0
+    try:
+        if target.startswith("<#") and target.endswith(">"):
+            target_id = int(target[2:-1])
+        elif target.startswith("<@&") and target.endswith(">"):
+            target_id = int(target[3:-1])
+        elif target.isdigit():
+            target_id = int(target)
+        else:
+            return await i.response.send_message("❌ Mention a channel/role, or use ID. / يرجى منشن القناة أو الرتبة.", ephemeral=True)
+    except (ValueError, IndexError):
+        return await i.response.send_message("❌ Invalid target format. / صيغة غير صالحة.", ephemeral=True)
+    
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("INSERT INTO notif_settings(guild_id, event_type, mode, target_id) VALUES(?,?,?,?) ON CONFLICT(guild_id, event_type) DO UPDATE SET mode=excluded.mode, target_id=excluded.target_id", (i.guild.id, event_type.value, mode.value, target_id))
+        await db.commit()
+    await i.response.send_message(f"✅ Notification **{event_type.name}** set to **{mode.name}**. / تم الضبط.", ephemeral=True)
 # ================================================================ المساعدة (Help) - Bilingual
 HELP_DATA = [
     ("📜 Part 1 — Logging Activity / تسجيل النشاط", discord.Color.gold(), [
@@ -2357,21 +2435,6 @@ async def set_custom_reward(i: discord.Interaction, system_key: str, points: int
             await db.execute("INSERT INTO custom_settings(guild_id, key, value) VALUES(?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value", (i.guild.id, f"{system_key}_role", str(role.id)))
         await db.commit()
     await i.response.send_message(f"✅ Saved reward for `{system_key}`: {points} points" + (f" and {role.mention}" if role else "") + " / تم الحفظ.", ephemeral=True)
-
-@bot.tree.command(name="set-notification", description="Set where notifications go / تحديد مكان إرسال الإشعارات")
-@app_commands.checks.cooldown(1, 5.0)
-@app_commands.choices(event_type=[app_commands.Choice(name="Auto-Quests / المهام اليومية", value="quests"), app_commands.Choice(name="Daily Bonus / المكافأة اليومية", value="daily")], mode=[app_commands.Choice(name="Channel / قناة عامة", value="channel"), app_commands.Choice(name="DM / رسالة خاصة", value="dm")])
-async def set_notification(i: discord.Interaction, event_type: app_commands.Choice[str], mode: app_commands.Choice[str], target: str):
-    if not await gate(i, "set-notification", editor=True): return
-    target_id = 0
-    if target.startswith("<#") and target.endswith(">"): target_id = int(target[2:-1])
-    elif target.startswith("<@&") and target.endswith(">"): target_id = int(target[3:-1])
-    elif target.isdigit(): target_id = int(target)
-    else: return await i.response.send_message("❌ Mention a channel/role, or use ID. / يرجى منشن القناة أو الرتبة.", ephemeral=True)
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO notif_settings(guild_id, event_type, mode, target_id) VALUES(?,?,?,?) ON CONFLICT(guild_id, event_type) DO UPDATE SET mode=excluded.mode, target_id=excluded.target_id", (i.guild.id, event_type.value, mode.value, target_id))
-        await db.commit()
-    await i.response.send_message(f"✅ Notification **{event_type.name}** set to **{mode.name}**. / تم الضبط.", ephemeral=True)
 
 @bot.tree.command(name="streak", description="Check your daily login streak / عرض الستريك")
 @app_commands.checks.cooldown(1, 5.0)
@@ -2647,7 +2710,7 @@ async def h2h_cmd(i: discord.Interaction, member1: discord.Member, member2: disc
         
     m1_wins, m2_wins = 0, 0
     for author_id, result, data_str in rows:
-        data = json.loads(data_str)
+        data = json.loads(data_str or "{}")
         opp_text = str(data.get("opponent", ""))
         fighter_text = str(data.get("my_fighter", ""))
         
@@ -2696,8 +2759,9 @@ async def lfg_role_autocomplete(i: discord.Interaction, current: str) -> List[ap
     roles = [i.guild.get_role(rid) for rid in role_ids if i.guild.get_role(rid)]
     return [app_commands.Choice(name=r.name, value=str(r.id)) for r in roles if current.lower() in r.name.lower()][:25]
 
+# [PATCH 8] LFG مع cooldown 5 دقايق + تأخير ثانية + حد أقصى 200 عضو
 @bot.tree.command(name="lfg", description="Looking for group / البحث عن فريق للعب")
-@app_commands.checks.cooldown(1, 60.0)
+@app_commands.checks.cooldown(1, 300.0)
 @app_commands.choices(mode=[app_commands.Choice(name="Channel / قناة عامة", value="channel"), app_commands.Choice(name="DM / رسالة خاصة", value="dm")])
 @app_commands.autocomplete(target_role=lfg_role_autocomplete)
 async def lfg_cmd(i: discord.Interaction, mode: app_commands.Choice[str], target_role: str, note: str = "Looking for a team! / أبحث عن فريق للعب!"):
@@ -2721,23 +2785,23 @@ async def lfg_cmd(i: discord.Interaction, mode: app_commands.Choice[str], target
         await i.response.send_message("✅ Sent to channel. / تم الإرسال للقناة.", ephemeral=True)
     else:
         await i.response.defer(ephemeral=True)
-        
-        # تحديث كاش الأعضاء عشان يلاقي الكل
         await _ensure_members(i.guild)
         
         count = 0
         failed = 0
         
-        for member in role.members:
-            if member.bot or member.id == i.user.id: continue
+        # حد أقصى 200 عضو لتجنب spam
+        members_to_notify = [m for m in role.members if not m.bot and m.id != i.user.id][:200]
+        
+        for member in members_to_notify:
             try:
                 await member.send(embed=embed)
                 count += 1
             except discord.HTTPException:
                 failed += 1
             
-            # تأخير نص ثانية عشان ديسكورد ميعملش حظر
-            await asyncio.sleep(0.5) 
+            # تأخير ثانية كاملة لتجنب rate limit
+            await asyncio.sleep(1.0)
             
         await i.followup.send(f"✅ Sent to {count} members in DM. (Failed: {failed})\nتم الإرسال لـ {count} عضو في الخاص. (فشل إرسال لـ {failed})", ephemeral=True)
 
