@@ -1858,13 +1858,6 @@ async def log_tryout(i: discord.Interaction, candidate: discord.Member, result: 
     extra = {"candidate_id": candidate.id, "candidate": candidate.mention, "tester_id": i.user.id}
     await start_log(i, "tryout", result.value, [proof], extra)
 
-```
-
----
-
-### 🧩 الجزء الثاني من الكود (`bot.py` - أضفه مباشرة أسفل الجزء الأول لإكمال الملف):
-
-```python
 @bot.tree.command(name="resubmit", description="Fix and resend a rejected log | إعادة إرسال لوج مرفوض")
 async def resubmit(i: discord.Interaction, log_id: int):
     if not i.guild or not isinstance(i.user, discord.Member):
