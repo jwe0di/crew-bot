@@ -9,6 +9,7 @@ import re
 import sqlite3
 import tempfile
 import threading
+import time
 import uuid
 from datetime import timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,12 +27,11 @@ import config
 
 load_dotenv()
 
-BOT_VERSION = "v8.0.1 (Security Hardened)"
+BOT_VERSION = "v8.1.0 (Custom Emojis)"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
 
-# [PATCH 2] حماية ملف الداتابيز
 try:
     if os.path.exists(DB):
         os.chmod(DB, 0o600)
@@ -40,7 +40,6 @@ except (OSError, NotImplementedError):
 
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".mov", ".webm", ".mkv"}
 MAX_FILE_SIZE = 25 * 1024 * 1024
-# [PATCH 1] تم تقليل الحجم من 50MB لـ 30MB لمنع استهلاك الذاكرة
 MAX_TOTAL_FILES_SIZE = 30 * 1024 * 1024
 MAX_FILES_COUNT = 5
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
@@ -55,7 +54,6 @@ def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
-# ================================================================ الإعدادات الأساسية
 REQUIRED_TYPES = ("war", "1v1", "2v2", "training", "tryout")
 _DEFAULT_LOG_TYPES = {
     "war": {"label": "Crew War Log", "fields": [("my_team", "Who fought for Dragon Slayers", True, True), ("crew", "Enemy crew name", False, True), ("their_team", "Who fought for the enemy crew", True, True), ("score", "Score (e.g. 5-3)", False, True), ("notes", "Notes (optional)", True, False)]},
@@ -116,23 +114,22 @@ UPDATE_PRESETS = {
         "label": f"🤖 Release notes {BOT_VERSION}",
         "title_en": f"DragonSlayerBot {BOT_VERSION}",
         "title_ar": f"إصدار البوت {BOT_VERSION}",
-        "desc_en": ("• Bilingual system (English / Arabic).\n• V8.0.1: Security hardening, Temp Admin protection, LFG abuse prevention."),
-        "desc_ar": ("• نظام مزدوج اللغة (إنجليزي / عربي).\n• تحديث V8.0.1: تحسينات أمنية، حماية Temp Admin، حماية LFG من السبام."),
+        "desc_en": ("• Bilingual system (English / Arabic).\n• V8.1: Custom emojis for logs, edit-log command, security hardening."),
+        "desc_ar": ("• نظام مزدوج اللغة (إنجليزي / عربي).\n• تحديث V8.1: إيموجيات مخصصة للوجات، أمر تعديل اللوج، تحسينات أمنية."),
     }
 }
 UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"][:100], value=k) for k, v in UPDATE_PRESETS.items()]
 
 ALL_BOT_COMMANDS = [
-    "log-war", "log-1v1", "log-2v2", "log-training", "log-tryout", "resubmit", "log-update", "set-log-template", "points", "leaderboard", "profile",
+    "log-war", "log-1v1", "log-2v2", "log-training", "log-tryout", "resubmit", "edit-log", "log-update", "set-log-template", "points", "leaderboard", "profile",
     "stats", "rates", "link", "pending", "revoke-log", "inactive", "season-reset", "season-top", "backup", "setchannel", "setping",
     "setroles", "setrule", "set-log-points", "set-rank-points", "set-points", "sync-ranks", "verify-points", "settings", "sync", "set-cmd-perms", "set-update-ping",
     "help", "send-help-panel", "restore-backup", "my-logs", "log-info", "reviewer-stats", "create-new-crew", "crews-list", "crews-delete-all",
     "streak", "shop", "buy", "achievements", "claim-achievement", "quests", "event", "start-vote", "add-shop-item", "add-achievement", "add-quest", "customize-msg", "set-custom-reward",
     "create-custom-role", "h2h", "lfg", "daily", "setup-tickets", "set-bio", "embed", "set-temp-voice", "create-temp-voice", "set-notification", "purge", "set-lfg-roles", "set-top-rewards",
-    "grant-temp-admin", "revoke-temp-admin"
+    "grant-temp-admin", "revoke-temp-admin", "set-log-emojis", "show-log-emojis", "reset-log-emojis"
 ]
 
-# ================================================================ النصوص (Bilingual)
 TEXTS = {
     "no_perm": "❌ No permission / مش معاك صلاحية.",
     "no_role": "❌ Missing required role / مش معاك الرتبة المطلوبة.",
@@ -164,7 +161,7 @@ TEXTS = {
     "points_msg": "💰 {member}'s balance: **{total}** points / رصيد {member}: **{total}** نقطة.",
     "no_points_yet": "ℹ️ No points recorded yet / مفيش نقاط مسجلة لسه.",
     "lb_week": "📊 Weekly Leaderboard / متصدري الأسبوع",
-    "lb_season": "🏆 Season Leaderboard / متصدرى الموسم",
+    "lb_season": "🏆 Season Leaderboard / متصدري الموسم",
     "lb_all": "📈 All-Time Leaderboard / متصدري كل الأوقات",
     "no_pending": "✅ No pending logs / مفيش لوجات منتظرة.",
     "no_my_logs": "ℹ️ No logs recorded yet / مفيش لوجات ليك لسه.",
@@ -209,7 +206,6 @@ def tr(key: str, **kw) -> str:
     text = TEXTS.get(key, key)
     return text.format(**kw) if kw else text
 
-# ================================================================ قاعدة البيانات
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(guild_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(guild_id, key));
 CREATE TABLE IF NOT EXISTS members(guild_id INTEGER, user_id INTEGER, points INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(guild_id, user_id));
@@ -250,6 +246,7 @@ CREATE TABLE IF NOT EXISTS notif_settings(guild_id INTEGER, event_type TEXT, mod
 CREATE TABLE IF NOT EXISTS lfg_allowed_roles(guild_id INTEGER, role_id INTEGER, PRIMARY KEY(guild_id, role_id));
 CREATE TABLE IF NOT EXISTS votes(guild_id INTEGER, message_id INTEGER, voter_id INTEGER, target_id INTEGER, PRIMARY KEY(guild_id, message_id, voter_id));
 CREATE TABLE IF NOT EXISTS temp_perms(guild_id INTEGER, user_id INTEGER, expires_at TEXT, PRIMARY KEY(guild_id, user_id));
+CREATE TABLE IF NOT EXISTS log_emojis(guild_id INTEGER, slot TEXT, emoji TEXT, PRIMARY KEY(guild_id, slot));
 """
 
 LEGACY_COPY = {
@@ -290,7 +287,6 @@ def owner_id():
     except ValueError:
         return 0
 
-# [PATCH 3] Whitelist لأسماء الجداول المسموح بها
 _ALLOWED_TABLES = {
     "settings", "members", "guild_channels", "logs", "hashes",
     "guild_cfg", "role_perms", "point_events", "links",
@@ -299,7 +295,7 @@ _ALLOWED_TABLES = {
     "temp_voice_rooms", "streaks", "shop_items", "achievements",
     "user_achievements", "quests", "events", "tickets",
     "daily_bonus", "bios", "notif_settings", "lfg_allowed_roles",
-    "votes", "temp_perms",
+    "votes", "temp_perms", "log_emojis",
     "settings_legacy", "members_legacy", "links_legacy",
     "season_archive_legacy", "point_events_legacy",
 }
@@ -571,6 +567,42 @@ async def get_custom_val(guild_id, key, default):
         row = await cur.fetchone()
     return row[0] if row else default
 
+# ================================================================ نظام الإيموجيات المخصصة
+_EMOJI_CACHE = {}
+_EMOJI_CACHE_TS = {}
+MSG_LIMIT = 1900
+
+async def get_guild_emojis(guild_id: int) -> dict:
+    now = time.time()
+    if guild_id in _EMOJI_CACHE and now - _EMOJI_CACHE_TS.get(guild_id, 0) < 300:
+        return _EMOJI_CACHE[guild_id]
+    
+    emojis = {}
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT slot, emoji FROM log_emojis WHERE guild_id=?", (guild_id,))
+        for slot, emoji in await cur.fetchall():
+            emojis[slot] = emoji
+            
+    _EMOJI_CACHE[guild_id] = emojis
+    _EMOJI_CACHE_TS[guild_id] = now
+    return emojis
+
+def invalidate_emoji_cache(guild_id: int):
+    _EMOJI_CACHE.pop(guild_id, None)
+    _EMOJI_CACHE_TS.pop(guild_id, None)
+
+def build_divider(emojis: dict) -> str:
+    left = emojis.get("divider_left", "")
+    right = emojis.get("divider_right", "")
+    core = "●▬▬▬▬▬▬▬▬▬▬▬☭   ☭▬▬▬▬▬▬▬▬▬▬▬●"
+    if left and right:
+        return f"{left}   {core}   {right}"
+    elif left:
+        return f"{left}   {core}"
+    elif right:
+        return f"{core}   {right}"
+    return core
+
 # ================================================================ الإشعارات الذكية
 async def send_notification(guild, event_type, title, desc, color=discord.Color.blue()):
     async with aiosqlite.connect(DB) as db:
@@ -600,7 +632,7 @@ async def send_notification(guild, event_type, title, desc, color=discord.Color.
                     pass
                 await asyncio.sleep(0.5)
 
-# ================================================================ الصلاحيات (بما فيها الحماية الجديدة)
+# ================================================================ الصلاحيات (بما فيها الحماية)
 def has_role(member, names) -> bool:
     normalized = {str(n).strip().casefold() for n in names if str(n).strip()}
     return any(r.name.strip().casefold() in normalized for r in getattr(member, "roles", []))
@@ -612,7 +644,6 @@ def is_admin(member) -> bool:
         return True
     return member.guild_permissions.administrator
 
-# [PATCH 4] قائمة الأوامر اللي مش مسموح للـ Temp Admin يستخدمها
 TEMP_ADMIN_BLOCKED_COMMANDS = {
     "grant-temp-admin",
     "revoke-temp-admin",
@@ -647,7 +678,6 @@ async def has_temp_admin(member) -> bool:
 async def is_editor(member) -> bool:
     return is_admin(member) or await has_temp_admin(member) or has_role(member, EDITOR_ROLES)
 
-# [PATCH 5] دالة جديدة عشان تحمي الـ Temp Admin من الأوامر الحساسة
 async def is_editor_for_command(member, cmd_name: str) -> bool:
     if is_admin(member):
         return True
@@ -702,7 +732,6 @@ async def check_cmd_perm(i: discord.Interaction, cmd_name: str) -> bool:
         
     return False
 
-# [PATCH 6] تحديث gate عشان يستخدم الحماية الجديدة
 async def gate(i: discord.Interaction, cmd_name: str, editor=False) -> bool:
     if not i.guild or not isinstance(i.user, discord.Member):
         await i.response.send_message(tr("server_only"), ephemeral=True)
@@ -877,36 +906,35 @@ bot = CrewBot()
 async def on_app_command_error(i: discord.Interaction, error):
     await report_error(i, error)
 
-# ================================================================ شكل اللوج الثابت
-_EMO = getattr(config, "EMOJIS", {}) or {}
-ANGEL = _EMO.get("angel", "<:emoji_2:1568348048906649652>")
-MOON = _EMO.get("bullet", "<a:emoji_15:1568348248522100757>")
-ARROW = _EMO.get("arrow", "<a:emoji_8:1568348117236187237>")
-CROWN = _EMO.get("crown", "<:emoji_11:1568348158495432754>")
-_SPARK = _EMO.get("spark", "<a:emoji_6:1568348105781416008>")
-DIVIDER = _EMO.get("divider", f"{_SPARK}   ●▬▬▬▬▬▬▬▬▬▬▬☭   ☭▬▬▬▬▬▬▬▬▬▬▬●   {_SPARK}")
-MSG_LIMIT = 1900
-
-DEFAULT_TEMPLATES = {
-    "war": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Fighters:**\n{ARROW} {my_team}\n\n{DIVIDER}\n\n{MOON} **{crew} Fighters:**\n{ARROW} {their_team}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{participants_block}{flags_block}",
-    "1v1": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Fighter:**\n{ARROW} {my_fighter}\n\n{DIVIDER}\n\n{MOON} **Opponent:**\n{ARROW} {opponent}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{flags_block}",
-    "2v2": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Team:**\n{ARROW} {my_team}\n\n{DIVIDER}\n\n{MOON} **Enemy Team:**\n{ARROW} {their_team}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{participants_block}{flags_block}",
-    "training": "{MOON} **Logged by:** {author}\n{MOON} **Training Participants:**\n{ARROW} {participants}\n\n{DIVIDER}\n\n      • **Score:** {score}\n{notes_line}{youtube_line}{flags_block}",
-    "tryout": "{MOON} **Tested by:** {author}\n{MOON} **Tryout Candidate:**\n{ARROW} {candidate} {roblox}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{flags_block}"
-}
-
+# ================================================================ شكل اللوج (مع الإيموجيات المخصصة)
 def clip(v, n=350):
     v = str(v) if v not in (None, "") else "-"
     return v if len(v) <= n else v[: n - 1] + "…"
+
+DEFAULT_TEMPLATES = {
+    "war": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Fighters:**\n{ARROW}  {my_team}\n\n{DIVIDER}\n\n{MOON} **{crew} Fighters:**\n{ARROW}  {their_team}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{participants_block}{flags_block}",
+    "1v1": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Fighter:**\n{ARROW}  {my_fighter}\n\n{DIVIDER}\n\n{MOON} **Opponent:**\n{ARROW}  {opponent}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{flags_block}",
+    "2v2": "{MOON} **Logged by:** {author}\n{MOON} **Dragon Slayer's Team:**\n{ARROW}  {my_team}\n\n{DIVIDER}\n\n{MOON} **Enemy Team:**\n{ARROW}  {their_team}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{participants_block}{flags_block}",
+    "training": "{MOON} **Logged by:** {author}\n{MOON} **Training Participants:**\n{ARROW}  {participants}\n\n{DIVIDER}\n\n      • **Score:** {score}\n{notes_line}{youtube_line}{flags_block}",
+    "tryout": "{MOON} **Tested by:** {author}\n{MOON} **Tryout Candidate:**\n{ARROW}  {candidate} {roblox}\n\n{DIVIDER}\n\n{CROWN} **Result:** {result}\n      • **Score:** {score}\n{notes_line}{youtube_line}{flags_block}"
+}
 
 async def get_custom_template(guild_id, log_type):
     t = await raw_setting(guild_id, f"template:{log_type}")
     return t or DEFAULT_TEMPLATES.get(log_type, "")
 
 def apply_template(template: str, values: dict) -> str:
-    return TEMPLATE_VAR_RE.sub(lambda m: str(values.get(m.group(1), m.group(0))), template)
+    result = TEMPLATE_VAR_RE.sub(lambda m: str(values.get(m.group(1), m.group(0))), template)
+    cleaned = []
+    for line in result.split("\n"):
+        if line.startswith(" ") and line.strip():
+            line = line[1:]
+        cleaned.append(line)
+    return "\n".join(cleaned)
 
-def render(log_id, log_type, author_id, data, result, flags=None, status="pending", points=None, reviewer_id=None, reason=None, pts_to=None, custom_template=None):
+def render(log_id, log_type, author_id, data, result, flags=None, status="pending", points=None, reviewer_id=None, reason=None, pts_to=None, custom_template=None, guild_emojis=None):
+    guild_emojis = guild_emojis or {}
+    
     label = LOG_TYPES.get(log_type, {}).get("label", log_type)
     d = lambda k, default="-": clip(data.get(k, default))
     participants = dedupe([int(x) for x in data.get("participants", [])]) if isinstance(data.get("participants"), list) else []
@@ -915,6 +943,8 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
     template = custom_template or DEFAULT_TEMPLATES.get(log_type, "")
     labels = TRYOUT_LABEL if log_type == "tryout" else RESULT_LABEL
     
+    divider = build_divider(guild_emojis)
+    
     values = {
         "log_id": log_id, "author": f"<@{author_id}>", "score": d("score"), "notes": d("notes"),
         "youtube_link": data.get("youtube_link", "-"), "my_team": d("my_team"), "their_team": d("their_team"),
@@ -922,15 +952,19 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
         "participants": d("participants") if not participants else " ".join(f"<@{p}>" for p in participants),
         "candidate": data.get("candidate", "-"), "roblox": f"({clip(data['roblox'], 40)})" if data.get("roblox") else "",
         "p1": d("p1"), "p2": d("p2"), "result": labels.get(result, result) if result else "-",
-        "MOON": MOON, "ARROW": ARROW, "CROWN": CROWN, "DIVIDER": DIVIDER, "ANGEL": ANGEL,
+        "ANGEL": guild_emojis.get("angel", ""),
+        "MOON": guild_emojis.get("moon", ""),
+        "ARROW": guild_emojis.get("arrow", ""),
+        "CROWN": guild_emojis.get("crown", ""),
+        "DIVIDER": divider,
         "notes_line": f"      • **Notes:** {d('notes')}\n" if data.get("notes") else "",
         "youtube_line": f"      • **YouTube Video:** <{data['youtube_link']}>\n" if data.get("youtube_link") else "",
-        "participants_block": f"\n{MOON} **Tagged Teammates Verification:**\n" + "".join(f"• <@{p}> — **{'✅ Confirmed' if p in confirmed else '⏳ Unconfirmed'}**\n" for p in participants[:8]) if log_type in ("war", "2v2") and participants else "",
+        "participants_block": f"\n**Tagged Teammates Verification:**\n" + "".join(f"• <@{p}> — **{'✅ Confirmed' if p in confirmed else '⏳ Unconfirmed'}**\n" for p in participants[:8]) if log_type in ("war", "2v2") and participants else "",
         "flags_block": f"\n⚠️ **Warnings:**\n" + "\n".join("• " + clip(f, 120) for f in flags[:5]) if flags else ""
     }
 
-    header = f"{ANGEL}  **{label}**  {ANGEL}  🆔 `Log #{log_id}`\n\n{DIVIDER}\n\n"
-    body = header + apply_template(clip(template, 1200), values) + "\n\n" + DIVIDER + "\n"
+    header = f"{guild_emojis.get('angel', '')}  **{label}**  {guild_emojis.get('angel', '')}  🆔 `Log #{log_id}`\n\n{divider}\n\n"
+    body = header + apply_template(clip(template, 1200), values) + "\n\n" + divider + "\n"
     
     footer = f"\n**Status:** {STATUS_LABEL[status]}"
     if points is not None:
@@ -938,7 +972,7 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
         if pts_to: footer += " → " + " ".join(f"<@{u}>" for u in list(pts_to)[:6])
     if reviewer_id and status != "pending":
         who = {"accepted": "Accepted by", "rejected": "Rejected by", "revoked": "Revoked by"}[status]
-        footer += f"\n{MOON} **{who}:** <@{reviewer_id}>"
+        footer += f"\n**{who}:** <@{reviewer_id}>"
     if reason: footer += f"\n**Reason:** {clip(reason, 300)}"
     
     if len(body) + len(footer) > MSG_LIMIT:
@@ -1180,7 +1214,8 @@ class LogModal(discord.ui.Modal):
         ping_id = await cfg_get(i.guild.id, self.log_type, "review_ping")
         
         custom_tmpl = await get_custom_template(i.guild.id, self.log_type)
-        text = render(log_id, self.log_type, i.user.id, data, self.result, flags, custom_template=custom_tmpl)
+        guild_emojis = await get_guild_emojis(i.guild.id)
+        text = render(log_id, self.log_type, i.user.id, data, self.result, flags, custom_template=custom_tmpl, guild_emojis=guild_emojis)
         content = (f"<@&{ping_id}>\n" if ping_id else "") + text
         am = mentions(ping_id)
 
@@ -1212,6 +1247,117 @@ class LogModal(discord.ui.Modal):
         if flags:
             await dm_owner(f"⚠️ {i.user.mention} submitted Log #{log_id} with warnings:\n" + "\n".join(flags))
         await i.followup.send(tr("log_submitted", id=log_id), ephemeral=True)
+
+# ================================================================ تعديل اللوج (Edit Log)
+class EditLogModal(discord.ui.Modal):
+    def __init__(self, log_id, log_type, result, files, extra, defaults=None):
+        super().__init__(title=f"Edit Log #{log_id} / تعديل اللوج")
+        self.log_id = log_id
+        self.log_type = log_type
+        self.result = result
+        self.files = files
+        self.extra = extra
+        self.inputs = {}
+        defaults = defaults or {}
+        for key, label, long, required in LOG_TYPES[log_type]["fields"]:
+            max_len = 350 if long else 100
+            dv = defaults.get(key)
+            dv = str(dv)[:max_len] if isinstance(dv, (str, int)) and str(dv) else None
+            ti = discord.ui.TextInput(
+                label=label[:45], required=required, max_length=max_len, default=dv,
+                style=discord.TextStyle.paragraph if long else discord.TextStyle.short
+            )
+            self.add_item(ti)
+            self.inputs[key] = ti
+
+    async def on_error(self, interaction, error):
+        await report_error(interaction, error)
+
+    async def on_submit(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        
+        row = await get_log(self.log_id)
+        if not row or row["guild_id"] != i.guild.id or row["author_id"] != i.user.id:
+            return await i.followup.send(tr("log_not_found"), ephemeral=True)
+        
+        if row["status"] != "pending":
+            return await i.followup.send("❌ Only pending logs can be edited. / يمكن فقط تعديل اللوجات قيد المراجعة.", ephemeral=True)
+        
+        new_data = {k: v.value.strip() for k, v in self.inputs.items()}
+        new_data.update(self.extra)
+        
+        old_data = json.loads(row["data"] or "{}")
+        if old_data.get("proof_urls"):
+            new_data["proof_urls"] = old_data["proof_urls"]
+        
+        async with aiosqlite.connect(DB) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await db.execute(
+                    "UPDATE logs SET data=? WHERE id=? AND status='pending' AND author_id=?",
+                    (json.dumps(new_data, ensure_ascii=False), self.log_id, i.user.id)
+                )
+                if cur.rowcount == 0:
+                    await db.rollback()
+                    return await i.followup.send(tr("log_already_reviewed"), ephemeral=True)
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                print(f"❌ edit-log DB error: {e}")
+                return await i.followup.send(tr("db_err"), ephemeral=True)
+        
+        try:
+            ch = i.guild.get_channel(row["review_channel"]) if row["review_channel"] else None
+            if ch and row["review_msg"]:
+                msg = await ch.fetch_message(row["review_msg"])
+                custom_tmpl = await get_custom_template(i.guild.id, row["type"])
+                guild_emojis = await get_guild_emojis(i.guild.id)
+                flags = json.loads(row["flags"] or "[]")
+                text = render(self.log_id, row["type"], row["author_id"], new_data, row["result"], flags, custom_template=custom_tmpl, guild_emojis=guild_emojis)
+                await msg.edit(content=text, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            print(f"⚠️ Could not update review message for Log #{self.log_id}: {e}")
+        
+        await audit(f"✏️ {i.user.mention} edited Log #{self.log_id}", i.guild)
+        await i.followup.send(f"✅ Log #{self.log_id} updated successfully. / تم تحديث اللوج بنجاح.", ephemeral=True)
+
+
+@bot.tree.command(name="edit-log", description="Edit a pending log's details / تعديل بيانات لوج قيد المراجعة")
+@app_commands.checks.cooldown(1, 15.0)
+@app_commands.describe(log_id="Log ID to edit / رقم اللوج المراد تعديله")
+async def edit_log(i: discord.Interaction, log_id: int):
+    if not i.guild or not isinstance(i.user, discord.Member):
+        return await i.response.send_message(tr("server_only"), ephemeral=True)
+    
+    row = await get_log(log_id)
+    
+    if not row or row["guild_id"] != i.guild.id or row["author_id"] != i.user.id:
+        return await i.response.send_message(tr("log_not_found"), ephemeral=True)
+    
+    if row["status"] != "pending":
+        return await i.response.send_message("❌ Only pending logs can be edited. Use `/resubmit` for rejected ones. / يمكن فقط تعديل اللوجات قيد المراجعة. استخدم `/resubmit` للمرفوضة.", ephemeral=True)
+    
+    if row["type"] not in LOG_TYPES:
+        return await i.response.send_message("❌ Invalid log type. / نوع اللوج غير صالح.", ephemeral=True)
+    
+    data = json.loads(row["data"] or "{}")
+    
+    files = []
+    try:
+        ch = i.guild.get_channel(row["review_channel"]) if row["review_channel"] else None
+        if ch and row["review_msg"]:
+            old = await ch.fetch_message(row["review_msg"])
+            files = list(old.attachments)
+    except discord.HTTPException:
+        pass
+    
+    if not files and data.get("proof_urls"):
+        files = [u for u in data["proof_urls"] if isinstance(u, str)]
+    
+    extra = {k: data[k] for k in ("candidate_id", "candidate", "tester_id", "participants", "youtube_link") if k in data}
+    
+    await i.response.send_modal(EditLogModal(log_id, row["type"], row["result"], files, extra, defaults=data))
+
 
 async def inspect_blobs(blobs, guild_id):
     hashes, flags = [], []
@@ -1354,7 +1500,6 @@ async def resubmit(i: discord.Interaction, log_id: int):
     if child:
         return await i.response.send_message(f"This log was already resubmitted as #{child[0]}.", ephemeral=True)
         
-    # [PATCH 9a] حماية من json.loads(None)
     data = json.loads(row["data"] or "{}")
     files = []
     try:
@@ -1408,10 +1553,10 @@ async def revoke_log(i: discord.Interaction, log_id: int, reason: app_commands.R
             print(f"❌ revoke DB error: {e}")
             return await i.followup.send(tr("db_err"), ephemeral=True)
 
-    # [PATCH 9a]
     data = json.loads(row["data"] or "{}")
     custom_tmpl = await get_custom_template(i.guild.id, row["type"])
-    text = render(log_id, row["type"], row["author_id"], data, row["result"], None, "revoked", reviewer_id=i.user.id, reason=reason, custom_template=custom_tmpl)
+    guild_emojis = await get_guild_emojis(i.guild.id)
+    text = render(log_id, row["type"], row["author_id"], data, row["result"], None, "revoked", reviewer_id=i.user.id, reason=reason, custom_template=custom_tmpl, guild_emojis=guild_emojis)
     
     for ch_id, msg_id in ((row["review_channel"], row["review_msg"]), (row["public_channel"], row["public_msg"])):
         if ch_id and msg_id:
@@ -1472,7 +1617,6 @@ async def accept_log(i: discord.Interaction):
     await i.response.defer()
     log_id = row["id"]
     
-    # [PATCH 9a]
     data = json.loads(row["data"] or "{}")
     flags = json.loads(row["flags"] or "[]")
     pts = await points_for(i.guild.id, row["type"], row["result"])
@@ -1500,12 +1644,13 @@ async def accept_log(i: discord.Interaction):
             return await i.followup.send(tr("db_err"), ephemeral=True)
 
     custom_tmpl = await get_custom_template(i.guild.id, row["type"])
+    guild_emojis = await get_guild_emojis(i.guild.id)
     pub_id = await cfg_get(i.guild.id, row["type"], "log_channel")
     log_ch = i.guild.get_channel(pub_id) if pub_id else None
     
     if log_ch:
         ping_id = await cfg_get(i.guild.id, row["type"], "log_ping")
-        text = render(log_id, row["type"], row["author_id"], data, row["result"], None, "accepted", pts, i.user.id, pts_to=recips, custom_template=custom_tmpl)
+        text = render(log_id, row["type"], row["author_id"], data, row["result"], None, "accepted", pts, i.user.id, pts_to=recips, custom_template=custom_tmpl, guild_emojis=guild_emojis)
         content = (f"<@&{ping_id}>\n" if ping_id else "") + text
         cand = [int(data["candidate_id"])] if row["type"] == "tryout" and data.get("candidate_id") else None
         try:
@@ -1520,7 +1665,7 @@ async def accept_log(i: discord.Interaction):
     else:
         await i.followup.send("Accepted, but no log channel is set. Use /setchannel.", ephemeral=True)
 
-    reviewed = render(log_id, row["type"], row["author_id"], data, row["result"], flags, "accepted", pts, i.user.id, pts_to=recips, custom_template=custom_tmpl)
+    reviewed = render(log_id, row["type"], row["author_id"], data, row["result"], flags, "accepted", pts, i.user.id, pts_to=recips, custom_template=custom_tmpl, guild_emojis=guild_emojis)
     try:
         await i.message.edit(content=reviewed, view=None, allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:
@@ -1592,11 +1737,11 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason / سبب الرفض"
                 print(f"❌ reject DB error: {e}")
                 return await i.followup.send(tr("db_err"), ephemeral=True)
 
-        # [PATCH 9a]
         data = json.loads(row["data"] or "{}")
         flags = json.loads(row["flags"] or "[]")
         custom_tmpl = await get_custom_template(i.guild.id, row["type"])
-        text = render(self.log_id, row["type"], row["author_id"], data, row["result"], flags, "rejected", reviewer_id=i.user.id, reason=self.reason.value, custom_template=custom_tmpl)
+        guild_emojis = await get_guild_emojis(i.guild.id)
+        text = render(self.log_id, row["type"], row["author_id"], data, row["result"], flags, "rejected", reviewer_id=i.user.id, reason=self.reason.value, custom_template=custom_tmpl, guild_emojis=guild_emojis)
         
         try:
             await self.message.edit(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
@@ -1647,7 +1792,6 @@ class ReviewView(discord.ui.View):
                     await db.rollback()
                     return await i.response.send_message(tr("log_already_reviewed"), ephemeral=True)
                     
-                # [PATCH 9b]
                 data = json.loads(log_row[1] or "{}")
                 participants = [int(x) for x in data.get("participants", [])]
                 if i.user.id not in participants:
@@ -1670,7 +1814,8 @@ class ReviewView(discord.ui.View):
 
         flags = json.loads(row["flags"] or "[]")
         custom_tmpl = await get_custom_template(i.guild.id, row["type"])
-        updated = render(row["id"], row["type"], row["author_id"], data, row["result"], flags, custom_template=custom_tmpl)
+        guild_emojis = await get_guild_emojis(i.guild.id)
+        updated = render(row["id"], row["type"], row["author_id"], data, row["result"], flags, custom_template=custom_tmpl, guild_emojis=guild_emojis)
         await i.response.send_message(tr("part_confirmed"), ephemeral=True)
         try:
             await i.message.edit(content=updated, allowed_mentions=discord.AllowedMentions.none())
@@ -1868,6 +2013,94 @@ async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice
             f"*(You can use variables like `{{MOON}}`, `{{ARROW}}`, `{{CROWN}}`, `{{DIVIDER}}`, `{{author}}`, `{{score}}`, `{{result}}`, etc.)*"
         )
         await i.response.send_message(msg[:1990], ephemeral=True)
+
+# ================================================================ إدارة الإيموجيات المخصصة
+EMOJI_SLOT_CHOICES = [
+    app_commands.Choice(name="👼 Angel (header) / رأس الرسالة", value="angel"),
+    app_commands.Choice(name="🌙 Moon / النقطة", value="moon"),
+    app_commands.Choice(name="➡️ Arrow / السهم", value="arrow"),
+    app_commands.Choice(name="👑 Crown / التاج", value="crown"),
+    app_commands.Choice(name="◀️ Divider Left / يسار الفاصل", value="divider_left"),
+    app_commands.Choice(name="▶️ Divider Right / يمين الفاصل", value="divider_right"),
+]
+
+@bot.tree.command(name="set-log-emojis", description="Set custom emojis for log messages / تحديد إيموجيات مخصصة للوجات")
+@app_commands.checks.cooldown(1, 5.0)
+@app_commands.choices(slot=EMOJI_SLOT_CHOICES)
+@app_commands.describe(
+    slot="Emoji slot / مكان الإيموجي",
+    emoji="Paste your emoji here (custom <:name:id> or normal 😀) / الصق الإيموجي هنا"
+)
+async def set_log_emojis(i: discord.Interaction, slot: app_commands.Choice[str], emoji: Optional[str] = None):
+    if not await gate(i, "set-log-emojis", editor=True):
+        return
+    
+    if emoji is None or not emoji.strip():
+        async with aiosqlite.connect(DB) as db:
+            await db.execute("DELETE FROM log_emojis WHERE guild_id=? AND slot=?", (i.guild.id, slot.value))
+            await db.commit()
+        invalidate_emoji_cache(i.guild.id)
+        return await i.response.send_message(f"🗑️ Cleared **{slot.name}**. / تم مسح الإيموجي.", ephemeral=True)
+    
+    emoji = emoji.strip()
+    if len(emoji) > 150:
+        return await i.response.send_message("❌ Emoji is too long. / الإيموجي طويل جداً.", ephemeral=True)
+    
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT INTO log_emojis(guild_id, slot, emoji) VALUES(?,?,?) ON CONFLICT(guild_id, slot) DO UPDATE SET emoji=excluded.emoji",
+            (i.guild.id, slot.value, emoji)
+        )
+        await db.commit()
+    invalidate_emoji_cache(i.guild.id)
+    
+    await audit(f"🎨 {i.user.mention} set log emoji `{slot.value}` to {emoji}", i.guild)
+    await i.response.send_message(
+        f"✅ **{slot.name}** → {emoji}\n\nتم الحفظ! جرب تسجل لوج وشوف الشكل الجديد. / Saved! Test it now.",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="show-log-emojis", description="Show current log emojis / عرض الإيموجيات الحالية")
+@app_commands.checks.cooldown(1, 5.0)
+async def show_log_emojis(i: discord.Interaction):
+    if not await gate(i, "show-log-emojis"):
+        return
+    
+    emojis = await get_guild_emojis(i.guild.id)
+    
+    embed = discord.Embed(
+        title="🎨 Current Log Emojis / الإيموجيات الحالية",
+        description="استخدم `/set-log-emojis` لتعديل أي إيموجي، أو اتركه فاضي عشان يبقى بدون إيموجي.\nUse `/set-log-emojis` to change any emoji, or leave it empty for no emoji.",
+        color=discord.Color.blue()
+    )
+    
+    slot_names = {
+        "angel": "👼 Angel (Header) / رأس الرسالة",
+        "moon": "🌙 Moon / النقطة",
+        "arrow": "➡️ Arrow / السهم",
+        "crown": "👑 Crown / التاج",
+        "divider_left": "◀️ Divider Left / يسار الفاصل",
+        "divider_right": "▶️ Divider Right / يمين الفاصل",
+    }
+    
+    for slot, name in slot_names.items():
+        val = emojis.get(slot)
+        embed.add_field(name=name, value=val if val else "— (none / لا يوجد)", inline=True)
+    
+    await i.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="reset-log-emojis", description="Reset all log emojis / مسح كل الإيموجيات")
+@app_commands.checks.cooldown(1, 10.0)
+async def reset_log_emojis(i: discord.Interaction):
+    if not await gate(i, "reset-log-emojis", editor=True):
+        return
+    
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("DELETE FROM log_emojis WHERE guild_id=?", (i.guild.id,))
+        await db.commit()
+    invalidate_emoji_cache(i.guild.id)
+    await audit(f"🗑️ {i.user.mention} cleared all log emojis", i.guild)
+    await i.response.send_message("🗑️ All custom log emojis cleared. / تم مسح كل الإيموجيات المخصصة.", ephemeral=True)
 
 # ================================================================ النقط والترتيب
 @bot.tree.command(name="set-log-points", description="Set log points / تحديد نقاط اللوجات")
@@ -2278,14 +2511,13 @@ async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], c
     except discord.HTTPException as e:
         await i.followup.send(f"❌ Failed to send the update: {e}", ephemeral=True)
 
-# ================================================================ الإشعارات الذكية (مع patch 7)
+# ================================================================ الإشعارات الذكية
 @bot.tree.command(name="set-notification", description="Set where notifications go / تحديد مكان إرسال الإشعارات")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(event_type=[app_commands.Choice(name="Auto-Quests / المهام اليومية", value="quests"), app_commands.Choice(name="Daily Bonus / المكافأة اليومية", value="daily")], mode=[app_commands.Choice(name="Channel / قناة عامة", value="channel"), app_commands.Choice(name="DM / رسالة خاصة", value="dm")])
 async def set_notification(i: discord.Interaction, event_type: app_commands.Choice[str], mode: app_commands.Choice[str], target: str):
     if not await gate(i, "set-notification", editor=True): return
     
-    # [PATCH 7] try/except لحماية من input غير صالح
     target_id = 0
     try:
         if target.startswith("<#") and target.endswith(">"):
@@ -2311,6 +2543,7 @@ HELP_DATA = [
         ("/log-2v2", "Log a 2v2 fight / تسجيل فايت 2 ضد 2."),
         ("/log-training", "Log a training session / تسجيل تدريب داخلي."),
         ("/log-tryout", "Log a tryout / تسجيل تراي أوت."),
+        ("/edit-log", "Edit a pending log before review / تعديل لوج قيد المراجعة قبل المراجعة."),
         ("/resubmit", "Fix and resend a rejected log / إعادة إرسال لوج مرفوض."),
         ("/my-logs", "View your latest logs / عرض لوجاتك."),
         ("/log-info", "View details of one log / تفاصيل لوج برقمه."),
@@ -2339,6 +2572,9 @@ HELP_DATA = [
         ("/grant-temp-admin", "Give temporary admin permissions / إعطاء صلاحيات مؤقتة."),
         ("/revoke-temp-admin", "Remove temporary admin permissions / سحب الصلاحيات المؤقتة."),
         ("/set-log-template", "Customize log layout / تخصيص تصميم اللوج."),
+        ("/set-log-emojis", "Set custom emojis for logs / تحديد إيموجيات مخصصة للوجات."),
+        ("/show-log-emojis", "Show current log emojis / عرض الإيموجيات الحالية."),
+        ("/reset-log-emojis", "Clear all log emojis / مسح كل الإيموجيات."),
         ("/create-new-crew", "Create a crew with leaders and divisions / إنشاء طاقم."),
         ("/crews-delete-all", "Delete all registered crews / حذف الطواقم."),
         ("/settings", "Show current server settings / عرض الإعدادات."),
@@ -2759,7 +2995,6 @@ async def lfg_role_autocomplete(i: discord.Interaction, current: str) -> List[ap
     roles = [i.guild.get_role(rid) for rid in role_ids if i.guild.get_role(rid)]
     return [app_commands.Choice(name=r.name, value=str(r.id)) for r in roles if current.lower() in r.name.lower()][:25]
 
-# [PATCH 8] LFG مع cooldown 5 دقايق + تأخير ثانية + حد أقصى 200 عضو
 @bot.tree.command(name="lfg", description="Looking for group / البحث عن فريق للعب")
 @app_commands.checks.cooldown(1, 300.0)
 @app_commands.choices(mode=[app_commands.Choice(name="Channel / قناة عامة", value="channel"), app_commands.Choice(name="DM / رسالة خاصة", value="dm")])
@@ -2790,7 +3025,6 @@ async def lfg_cmd(i: discord.Interaction, mode: app_commands.Choice[str], target
         count = 0
         failed = 0
         
-        # حد أقصى 200 عضو لتجنب spam
         members_to_notify = [m for m in role.members if not m.bot and m.id != i.user.id][:200]
         
         for member in members_to_notify:
@@ -2800,7 +3034,6 @@ async def lfg_cmd(i: discord.Interaction, mode: app_commands.Choice[str], target
             except discord.HTTPException:
                 failed += 1
             
-            # تأخير ثانية كاملة لتجنب rate limit
             await asyncio.sleep(1.0)
             
         await i.followup.send(f"✅ Sent to {count} members in DM. (Failed: {failed})\nتم الإرسال لـ {count} عضو في الخاص. (فشل إرسال لـ {failed})", ephemeral=True)
