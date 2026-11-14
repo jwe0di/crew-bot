@@ -821,6 +821,12 @@ def dedupe(seq):
     return out
 
 async def report_error(i: discord.Interaction, error):
+    import traceback
+    
+    # استخراج الخطأ الأصلي لو مغلف
+    original = getattr(error, "original", error)
+    
+    # الكول داون ليه معاملة خاصة
     if isinstance(error, app_commands.CommandOnCooldown):
         msg = tr("cooldown", time=f"{error.retry_after:.1f}")
         try:
@@ -830,6 +836,49 @@ async def report_error(i: discord.Interaction, error):
                 await i.response.send_message(msg, ephemeral=True)
         except discord.HTTPException:
             pass
+        return
+    
+    # طباعة التفاصيل كاملة في Railway Logs
+    tb = "".join(traceback.format_exception(type(original), original, original.__traceback__))
+    print(f"❌ Error in command: {type(original).__name__}: {original}")
+    print(tb)
+    
+    # تجهيز الرسالة للمستخدم
+    error_type = type(original).__name__
+    error_msg = str(original).strip() or "(no message / لا توجد رسالة)"
+    
+    # هل المستخدم أدمن/مالك؟
+    is_privileged = False
+    try:
+        if i.guild and isinstance(i.user, discord.Member):
+            is_privileged = is_admin(i.user)
+    except Exception:
+        pass
+    
+    if is_privileged:
+        # الأدمن/المالك يشوف تفاصيل كاملة + آخر أسطر الـ Traceback
+        tb_short = tb[-1200:] if len(tb) > 1200 else tb
+        msg = (
+            f"❌ **Error / خطأ**\n"
+            f"**Type:** `{error_type}`\n"
+            f"**Message:** {error_msg[:300]}\n"
+            f"**Traceback:**\n```py\n{tb_short}\n```"
+        )
+    else:
+        # العضو العادي يشوف نوع الخطأ + رسالته
+        msg = (
+            f"❌ **Error:** `{error_type}`\n"
+            f"**Details:** {error_msg[:500]}\n"
+            f"*Please report this to admin / يرجى إبلاغ الإدارة.*"
+        )
+    
+    try:
+        if i.response.is_done():
+            await i.followup.send(msg[:1990], ephemeral=True)
+        else:
+            await i.response.send_message(msg[:1990], ephemeral=True)
+    except discord.HTTPException:
+        pass
         return
         
     print(f"❌ Unhandled error: {type(error).__name__}: {error}")
