@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import uuid
+import urllib.parse
 from datetime import timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import List, Optional
@@ -30,7 +31,7 @@ except ImportError:
 
 load_dotenv()
 
-BOT_VERSION = "v8.2.0 (AI + Emojis)"
+BOT_VERSION = "v9.0.0 (Ultimate AI + Gaming)"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -53,9 +54,9 @@ AI_API_KEY = os.getenv("AI_API_KEY", "")
 
 _PROVIDERS = {
     "groq": ("https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
+    "groq_vision": ("https://api.groq.com/openai/v1/chat/completions", "llama-3.2-90b-vision-preview"),
     "openai": ("https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
     "deepseek": ("https://api.deepseek.com/chat/completions", "deepseek-chat"),
-    "together": ("https://api.together.xyz/v1/chat/completions", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
 }
 
 LANG_NAMES = {
@@ -74,24 +75,24 @@ def detect_language(text: str) -> str:
     if re.search(r"[\u4E00-\u9FFF]", text): return "zh"
     if re.search(r"[\u3040-\u30FF]", text): return "ja"
     if re.search(r"[\uAC00-\uD7AF]", text): return "ko"
-    if re.search(r"[\u0E00-\u0E7F]", text): return "th"
     return "en"
 
-def _build_system_prompt(lang: str) -> str:
+def _build_system_prompt(lang: str, is_admin: bool) -> str:
     lang_name = LANG_NAMES.get(lang, "English")
-    return f"""You are the AI assistant inside a Discord gaming server.
+    admin_status = "You HAVE full admin permissions. You can execute administrative tools without asking for confirmation." if is_admin else "You DO NOT have admin permissions. You can only chat and provide information. If the user asks you to perform an administrative action (like creating a role, muting, etc.), politely refuse and tell them they need the required role."
+    
+    return f"""You are the Ultimate AI Assistant inside a Discord gaming server (Dragon Slayers).
 
 🌐 LANGUAGE RULE (CRITICAL):
 The user's message is in **{lang_name}**.
 You MUST reply in **{lang_name}** — no exceptions.
-If the user switches language, reply in their new language.
 
 RULES:
 - Keep replies short (2-5 lines max unless asked for details).
 - Use tools to perform server actions. Never claim success unless a tool returned success.
-- Sensitive actions (create/edit/delete roles, channels, mass role assignment) require permission; if the user lacks it, politely refuse.
-- You can play simple games (riddles, guessing) when asked.
-- If you don't know something, say so honestly.
+- {admin_status}
+- Use the `search_web` tool if you need real-time information or don't know the answer.
+- If the user sends an image and asks about it, analyze it carefully.
 """
 
 _T_DEFS = [
@@ -99,15 +100,17 @@ _T_DEFS = [
     ("get_server_info", "Get server stats", {}, False),
     ("list_channels", "List server channels", {}, False),
     ("list_roles", "List server roles with member counts", {}, False),
-    ("get_channel_info", "Channel details", {"channel_query": "string (required)"}, False),
+    ("search_web", "Search the internet for real-time information (DuckDuckGo)", {"query": "string (required)"}, False),
     ("create_role", "Create a role", {"name": "string (required)", "color_hex": "string (optional)", "hoist": "boolean (optional)"}, True),
     ("edit_role", "Edit role name/color", {"role_query": "string (required)", "new_name": "string (optional)", "new_color_hex": "string (optional)"}, True),
     ("delete_role", "Delete a role (DESTRUCTIVE)", {"role_query": "string (required)"}, True),
-    ("create_channel", "Create a channel", {"name": "string (required)", "channel_type": "string (optional)", "category_query": "string (optional)", "is_private": "boolean (optional)", "allowed_roles": "array (optional)"}, True),
+    ("create_channel", "Create a channel", {"name": "string (required)", "channel_type": "string (optional)", "category_query": "string (optional)", "is_private": "boolean (optional)"}, True),
     ("delete_channel", "Delete a channel (DESTRUCTIVE)", {"channel_query": "string (required)"}, True),
     ("give_role", "Give a role to a member", {"member_query": "string (required)", "role_query": "string (required)"}, True),
     ("remove_role", "Remove a role from a member", {"member_query": "string (required)", "role_query": "string (required)"}, True),
-    ("bulk_give_role", "Give a role to all members that have another role (DESTRUCTIVE)", {"source_role_query": "string (required)", "target_role_query": "string (required)"}, True),
+    ("timeout_member", "Timeout a member (Mute)", {"member_query": "string (required)", "duration_minutes": "integer (required)", "reason": "string (optional)"}, True),
+    ("kick_member", "Kick a member from the server", {"member_query": "string (required)", "reason": "string (optional)"}, True),
+    ("purge_messages", "Delete messages in the current channel", {"amount": "integer (required)"}, True),
     ("send_channel_message", "Send a message in a channel", {"channel_query": "string (required)", "message_text": "string (required)"}, True),
 ]
 
@@ -115,18 +118,13 @@ TOOLS, TOOL_META = [], {}
 for _n, _d, _p, _a in _T_DEFS:
     _props, _req = {}, []
     for _k, _v in _p.items():
-        if "array" in _v:
-            _props[_k] = {"type": "array", "items": {"type": "string"}, "description": _v}
-        elif "boolean" in _v:
-            _props[_k] = {"type": "boolean", "description": _v}
-        else:
-            _props[_k] = {"type": "string", "description": _v}
-        if "required" in _v:
-            _req.append(_k)
+        if "boolean" in _v: _props[_k] = {"type": "boolean", "description": _v}
+        elif "integer" in _v: _props[_k] = {"type": "integer", "description": _v}
+        else: _props[_k] = {"type": "string", "description": _v}
+        if "required" in _v: _req.append(_k)
     TOOLS.append({"type": "function", "function": {"name": _n, "description": _d, "parameters": {"type": "object", "properties": _props, "required": _req}}})
     TOOL_META[_n] = {"requires_admin": _a}
 
-# ================================================================ HTTP server for Railway
 def run_dummy_server():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -137,7 +135,6 @@ def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
-# ================================================================ Config
 REQUIRED_TYPES = ("war", "1v1", "2v2", "training", "tryout")
 _DEFAULT_LOG_TYPES = {
     "war": {"label": "Crew War Log", "fields": [("my_team", "Who fought for Dragon Slayers", True, True), ("crew", "Enemy crew name", False, True), ("their_team", "Who fought for the enemy crew", True, True), ("score", "Score (e.g. 5-3)", False, True), ("notes", "Notes (optional)", True, False)]},
@@ -154,10 +151,8 @@ def _load_log_types():
     return _DEFAULT_LOG_TYPES
 
 LOG_TYPES = _load_log_types()
-_cfg_points = getattr(config, "DEFAULT_POINTS", {}) or {}
-DEFAULT_POINTS = {k: int(_cfg_points.get(k, v)) for k, v in {"war_win": 10, "war_loss": 5, "1v1_win": 8, "1v1_loss": 4, "2v2_win": 6, "2v2_loss": 3, "training": 3, "tryout": 5}.items()}
-_cfg_labels = getattr(config, "POINT_LABELS", {}) or {}
-POINT_LABELS = {k: str(_cfg_labels.get(k, v)) for k, v in {"war_win": "War - Win", "war_loss": "War - Loss", "1v1_win": "1v1 - Win", "1v1_loss": "1v1 - Loss", "2v2_win": "2v2 - Win", "2v2_loss": "2v2 - Loss", "training": "Training", "tryout": "Tryout"}.items()}
+DEFAULT_POINTS = {k: int(getattr(config, "DEFAULT_POINTS", {}).get(k, v)) for k, v in {"war_win": 10, "war_loss": 5, "1v1_win": 8, "1v1_loss": 4, "2v2_win": 6, "2v2_loss": 3, "training": 3, "tryout": 5}.items()}
+POINT_LABELS = {k: str(getattr(config, "POINT_LABELS", {}).get(k, v)) for k, v in {"war_win": "War - Win", "war_loss": "War - Loss", "1v1_win": "1v1 - Win", "1v1_loss": "1v1 - Loss", "2v2_win": "2v2 - Win", "2v2_loss": "2v2 - Loss", "training": "Training", "tryout": "Tryout"}.items()}
 LADDER = [(str(n), int(p)) for n, p in (getattr(config, "LADDER", None) or [("Lvl. 20", 20), ("Lvl. 40", 60), ("Lvl. 60", 130), ("Lvl. 80", 220), ("Lvl. 100", 350)])]
 EDITOR_ROLES = list(getattr(config, "EDITOR_ROLES", ["The Admiral", "Empyrean Monarch", "Commander"]))
 REVIEWER_ROLES = list(getattr(config, "REVIEWER_ROLES", ["The Admiral", "Empyrean Monarch", "Commander", "Astral Apotheosis"]))
@@ -166,125 +161,59 @@ CREW_ROLE_KEYWORD = getattr(config, "CREW_ROLE_KEYWORD", "Crew")
 
 RULE_DEFAULTS = {"daily_limit": 5, "reminder_hours": 48, "backup_hours": 24, "weekly_post": 1, "war_participants": 1, "tryout_autorole": 1}
 RULE_DEFAULTS.update(getattr(config, "RULE_DEFAULTS", {}) or {})
-RULE_LABELS = {"daily_limit": "Max logs per member per 24h (0 = unlimited)", "reminder_hours": "Remind reviewers after N hours (0 = off)", "backup_hours": "Auto backup to owner every N hours (0 = off)", "weekly_post": "Weekly leaderboard post (1 = on, 0 = off)", "war_participants": "War points to confirmed teammates (1 = on, 0 = off)", "tryout_autorole": "Give Crew role on passed tryout (1 = on, 0 = off)"}
+RULE_LABELS = {"daily_limit": "Max logs per member per 24h", "reminder_hours": "Remind reviewers after N hours", "backup_hours": "Auto backup every N hours", "weekly_post": "Weekly leaderboard post", "war_participants": "War points to confirmed teammates", "tryout_autorole": "Give Crew role on passed tryout"}
 
 RESULT_LABEL = {"win": "✅ Win", "loss": "❌ Loss"}
 TRYOUT_LABEL = {"win": "✅ Passed", "loss": "❌ Failed"}
 STATUS_LABEL = {"pending": "⏳ Pending", "accepted": "✅ Accepted", "rejected": "❌ Rejected", "revoked": "🚫 Revoked"}
 RESULT_CHOICES = [app_commands.Choice(name="Win / فوز", value="win"), app_commands.Choice(name="Loss / خسارة", value="loss")]
 TRYOUT_CHOICES = [app_commands.Choice(name="Passed / نجاح", value="win"), app_commands.Choice(name="Failed / فشل", value="loss")]
-LOG_TYPE_CHOICES = [app_commands.Choice(name="All types / كل الأنواع (default)", value="all")] + [app_commands.Choice(name=v["label"][:100], value=k) for k, v in LOG_TYPES.items()]
-KIND_CHANNEL = [app_commands.Choice(name="Review channel / قناة المراجعة", value="review_channel"), app_commands.Choice(name="Log channel / قناة اللوجات", value="log_channel"), app_commands.Choice(name="Audit channel / قناة التدقيق", value="audit_channel"), app_commands.Choice(name="Update notices / قناة التحديثات", value="update_channel")]
-KIND_PING = [app_commands.Choice(name="Review ping / منشن المراجعة", value="review_ping"), app_commands.Choice(name="Log ping / منشن اللوجات", value="log_ping")]
-KIND_ROLES = [app_commands.Choice(name="Reviewers / المراجعين", value="review"), app_commands.Choice(name="Submitters / المسجلين", value="submit")]
-ACTIONS = [app_commands.Choice(name="Add / إضافة", value="add"), app_commands.Choice(name="Remove / إزالة", value="remove")]
-PERIOD_CHOICES = [app_commands.Choice(name="All time / كل الأوقات", value="all"), app_commands.Choice(name="This season / هذا الموسم", value="season"), app_commands.Choice(name="This week / هذا الأسبوع", value="week")]
+LOG_TYPE_CHOICES = [app_commands.Choice(name="All types", value="all")] + [app_commands.Choice(name=v["label"][:100], value=k) for k, v in LOG_TYPES.items()]
+KIND_CHANNEL = [app_commands.Choice(name="Review channel", value="review_channel"), app_commands.Choice(name="Log channel", value="log_channel"), app_commands.Choice(name="Audit channel", value="audit_channel")]
+KIND_PING = [app_commands.Choice(name="Review ping", value="review_ping"), app_commands.Choice(name="Log ping", value="log_ping")]
+KIND_ROLES = [app_commands.Choice(name="Reviewers", value="review"), app_commands.Choice(name="Submitters", value="submit")]
+ACTIONS = [app_commands.Choice(name="Add", value="add"), app_commands.Choice(name="Remove", value="remove")]
+PERIOD_CHOICES = [app_commands.Choice(name="All time", value="all"), app_commands.Choice(name="This season", value="season"), app_commands.Choice(name="This week", value="week")]
 RULE_CHOICES = [app_commands.Choice(name=f"{l[:80]} / {k}", value=k) for k, l in RULE_LABELS.items()]
 POINT_CHOICES = [app_commands.Choice(name=f"{l} / {k}", value=k) for k, l in POINT_LABELS.items()]
 RANK_CHOICES = [app_commands.Choice(name=n, value=n) for n, _ in LADDER]
-BACKUP_SCOPE_CHOICES = [app_commands.Choice(name="Guild Activity / نشاط السيرفر (today)", value="today"), app_commands.Choice(name="Full Database / قاعدة البيانات (Owner only)", value="full")]
-BACKUP_DEST_CHOICES = [app_commands.Choice(name="Here in chat / هنا في الشات", value="chat"), app_commands.Choice(name="Bot Owner DM / خاص المالك", value="owner")]
+BACKUP_SCOPE_CHOICES = [app_commands.Choice(name="Guild Activity", value="today"), app_commands.Choice(name="Full Database", value="full")]
+BACKUP_DEST_CHOICES = [app_commands.Choice(name="Here in chat", value="chat"), app_commands.Choice(name="Bot Owner DM", value="owner")]
 
-COLOR_CHOICES = [
-    app_commands.Choice(name="🔴 Red / أحمر", value="FF0000"), app_commands.Choice(name="🟢 Green / أخضر", value="00FF00"),
-    app_commands.Choice(name="🔵 Blue / أزرق", value="0000FF"), app_commands.Choice(name="🟣 Purple / بنفسجي", value="800080"),
-    app_commands.Choice(name="🟡 Yellow / أصفر", value="FFFF00"), app_commands.Choice(name="🟠 Orange / برتقالي", value="FFA500"),
-    app_commands.Choice(name="🩷 Pink / وردي", value="FFC0CB"), app_commands.Choice(name="⚫ Black / أسود", value="000000"),
-    app_commands.Choice(name="⚪ White / أبيض", value="FFFFFF"), app_commands.Choice(name="🩵 Cyan / سماوي", value="00FFFF")
-]
+COLOR_CHOICES = [app_commands.Choice(name="🔴 Red", value="FF0000"), app_commands.Choice(name="🟢 Green", value="00FF00"), app_commands.Choice(name="🔵 Blue", value="0000FF"), app_commands.Choice(name="🟣 Purple", value="800080"), app_commands.Choice(name="🟡 Yellow", value="FFFF00")]
 
-UPDATE_PRESETS = {
-    "bot_patch": {
-        "label": f"🤖 Release notes {BOT_VERSION}",
-        "title_en": f"DragonSlayerBot {BOT_VERSION}",
-        "title_ar": f"إصدار البوت {BOT_VERSION}",
-        "desc_en": ("• AI assistant with language auto-detection.\n• Custom log emojis.\n• Edit-log command.\n• Security hardening."),
-        "desc_ar": ("• مساعد ذكي بالرد التلقائي بلغة المستخدم.\n• إيموجيات مخصصة للوجات.\n• أمر تعديل اللوج.\n• تحسينات أمنية."),
-    }
-}
-UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"][:100], value=k) for k, v in UPDATE_PRESETS.items()]
+UPDATE_PRESETS = {"bot_patch": {"label": f"🤖 Release notes {BOT_VERSION}", "title_en": f"Update {BOT_VERSION}", "title_ar": f"تحديث {BOT_VERSION}", "desc_en": "• AI Vision & Search\n• Reaction Roles\n• Tournaments\n• AI Memory", "desc_ar": "• رؤية وبحث AI\n• رتب تفاعلية\n• بطولات\n• ذاكرة للـ AI"}}
+UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"], value=k) for k, v in UPDATE_PRESETS.items()]
 
 ALL_BOT_COMMANDS = [
     "log-war", "log-1v1", "log-2v2", "log-training", "log-tryout", "resubmit", "edit-log", "log-update", "set-log-template", "points", "leaderboard", "profile",
     "stats", "rates", "link", "pending", "revoke-log", "inactive", "season-reset", "season-top", "backup", "setchannel", "setping",
-    "setroles", "setrule", "set-log-points", "set-rank-points", "set-points", "sync-ranks", "verify-points", "settings", "sync", "set-cmd-perms", "set-update-ping",
+    "setroles", "setrule", "set-log-points", "set-rank-points", "set-points", "sync-ranks", "verify-points", "settings", "sync", "set-cmd-perms",
     "help", "send-help-panel", "restore-backup", "my-logs", "log-info", "reviewer-stats", "create-new-crew", "crews-list", "crews-delete-all",
-    "streak", "shop", "buy", "achievements", "claim-achievement", "quests", "event", "start-vote", "add-shop-item", "add-achievement", "add-quest", "customize-msg", "set-custom-reward",
+    "streak", "shop", "buy", "achievements", "claim-achievement", "quests", "event", "start-vote", "add-shop-item", "add-achievement", "add-quest", "customize-msg",
     "create-custom-role", "h2h", "lfg", "daily", "setup-tickets", "set-bio", "embed", "set-temp-voice", "create-temp-voice", "set-notification", "purge", "set-lfg-roles", "set-top-rewards",
     "grant-temp-admin", "revoke-temp-admin", "set-log-emojis", "show-log-emojis", "reset-log-emojis",
-    "ai", "ai-reset", "ai-help", "set-ai-default", "set-ai-user", "set-ai-admin"
+    "ai", "ai-reset", "ai-help", "set-ai-default", "set-ai-user", "set-ai-admin", "set-ai-mention-roles", "transfer", "add-auto-reply", "setup-reaction-role", "tournament-create", "tournament-start", "tournament-set-winner"
 ]
 
 TEXTS = {
-    "no_perm": "❌ No permission / مش معاك صلاحية.",
-    "no_role": "❌ Missing required role / مش معاك الرتبة المطلوبة.",
-    "server_only": "❌ Server only / جوه السيرفر فقط.",
-    "unexpected_err": "❌ Unexpected error / حصل خطأ غير متوقع.",
-    "db_err": "❌ Database error / حصل خطأ في قاعدة البيانات.",
-    "cooldown": "⏳ Wait {time}s / استنى {time} ثانية.",
-    "log_not_found": "❌ Log not found / اللوج غير موجود.",
-    "log_already_reviewed": "⚠️ Already reviewed / اللوج ده اتراجع بالفعل.",
-    "no_review_perm": "❌ No permission to review / معندكش صلاحية مراجعة النوع ده.",
-    "no_self_review": "❌ Cannot review your own log / مينفعش تراجع اللوج بتاعك.",
-    "old_season_log": "❌ Previous season log / اللوج ده تبع موسم قديم.",
-    "log_rejected_ok": "✅ Log rejected / تم رفض اللوج.",
-    "not_tagged": "❌ Not listed as participant / اسمك مش متضاف كمشارك.",
-    "already_confirmed": "✅ Already confirmed / انت أكدت مشاركتك بالفعل.",
-    "part_confirmed": "✅ Participation confirmed / تم تأكيد مشاركتك!",
-    "daily_limit_hit": "❌ Daily limit reached ({limit} logs) / وصلت للحد اليومي ({limit} لوج).",
-    "log_submitted": "✅ Log `#{id}` submitted / تم إرسال اللوج `#{id}` للمراجعة.",
-    "no_submit_perm": "❌ No permission to submit / معندكش صلاحية تسجيل النوع ده.",
-    "war_min_files": "❌ Requires 2 attachments / حرب الكرو بتحتاج **ملفين على الأقل**.",
-    "min_one_file": "❌ Attach at least one file / لازم ترفق **ملف واحد على الأقل**.",
-    "no_review_ch": "❌ Review channel not set / قناة المراجعة مش متحدة.",
-    "bad_yt": "❌ Invalid YouTube link / رابط يوتيوب غير صالح.",
-    "bad_candidate": "❌ Invalid candidate / المرشح لازم يكون عضو حقيقي تاني.",
-    "too_many_files": "❌ Too many files (max {max}) / ملفات كتير جداً (الحد {max}).",
-    "bad_file_ext": "❌ File `{name}` unsupported / صيغة الملف `{name}` غير مدعومة.",
-    "file_too_big": "❌ File `{name}` > 25 MB / حجم الملف `{name}` أكبر من 25 ميجا.",
-    "total_too_big": "❌ Total size exceeds 30 MB / إجمالي الحجم تخطى 30 ميجا.",
-    "points_msg": "💰 {member}'s balance: **{total}** points / رصيد {member}: **{total}** نقطة.",
-    "no_points_yet": "ℹ️ No points recorded yet / مفيش نقاط مسجلة لسه.",
-    "lb_week": "📊 Weekly Leaderboard / متصدري الأسبوع",
-    "lb_season": "🏆 Season Leaderboard / متصدري الموسم",
-    "lb_all": "📈 All-Time Leaderboard / متصدري كل الأوقات",
-    "no_pending": "✅ No pending logs / مفيش لوجات منتظرة.",
-    "no_my_logs": "ℹ️ No logs recorded yet / مفيش لوجات ليك لسه.",
-    "sync_ok": "✅ Commands synced / تم مزامنة الأوامر.",
-    "sync_fail": "❌ Sync failed / فشلت المزامنة.",
-    "crew_bad_members": "❌ Invalid members / فيه عضو غير صحيح.",
-    "no_crews": "⚠️ No crews / لا توجد طواقم.",
-    "crews_prompt": "🎖️ **Available crews:**\nPick one: / **قائمة الطواقم:**\nاختر طاقماً:",
-    "crew_created": "✅ Crew **{name}** created! / تم تأسيس الطاقم **{name}**!",
-    "crew_exists": "❌ Name already taken / اسم الطاقم مستخدم.",
-    "crew_not_found": "❌ Crew doesn't exist / الطاقم غير موجود.",
-    "crew_bad_name": "❌ Name must be 2-40 chars / اسم الطاقم من 2-40 حرف.",
-    "crew_bad_owner": "❌ Owner must be real / المالك لازم عضو حقيقي.",
-    "crew_limit": "❌ Limit reached ({max}) / وصلت للحد الأقصى ({max}).",
-    "select_placeholder": "📂 Pick a crew... / اختر طاقماً...",
-    "none": "None / لا يوجد",
-    "empty": "Empty / فارغ",
-    "founded": "Founded / تاريخ التأسيس",
-    "team_commanders": "Commanders / الكوماندرز",
-    "browse_page": "Page {page} of {pages} / صفحة {page} من {pages}",
-    "shop_title": "🏪 Point Shop / متجر النقاط",
-    "shop_desc": "Buy custom roles with your points! Use `/buy` / اشتري رتب مخصصة بنقاطك! استخدم `/buy`",
-    "shop_empty": "⚠️ Shop is empty / المتجر فاضي حالياً.",
-    "shop_bought": "✅ Bought **{item}** for {price} points / مبروك! اشتريت **{item}** بـ {price} نقطة.",
-    "shop_no_points": "❌ Need **{price}** points, you have **{points}** / محتاج **{price}** نقطة وعندك **{points}** بس.",
-    "streak_title": "🔥 Your Streak / الستريك الخاص بك",
-    "streak_desc": "You logged in for **{current}** days in a row!\nMax streak: **{max}** days. / أنت مسجل دخول لمدة **{current}** أيام متتالية!\nأعلى ستريك لك هو **{max}** أيام.",
-    "achieve_title": "🏆 Achievement Unlocked! / إنجاز جديد!",
-    "achieve_desc": "Congrats {user}! Unlocked **{name}**!\nClaim reward with `/claim-achievement` / مبروك {user}! فتحت إنجاز **{name}**!\nتقدر تستلم مكافأتك بـ `/claim-achievement`",
-    "quest_title": "🎯 Daily Quests / المهام اليومية",
-    "event_title": "📅 Event: {title} / فعالية: {title}",
-    "event_desc": "**Time:** {time}\nClick buttons to confirm! / **الوقت:** {time}\nاضغط على الأزرار لتأكيد حضورك!",
-    "event_joined": "✅ Attendance confirmed / تم تسجيل حضورك!",
-    "event_left": "❌ Attendance cancelled / تم إلغاء حضورك.",
-    "role_created": "✅ Custom role {role} created for {member}! / تم إنشاء الرتبة المخصصة {role} لـ {member}!",
-    "role_created_free": "✅ Role {role} created for free (Admin/Owner)! / تم إنشاء الرتبة {role} مجاناً (أنت أدمن/مالك)!",
-    "achieve_claimed": "✅ Successfully claimed reward for **{name}**! / تم استلام مكافأة إنجاز **{name}** بنجاح!",
-    "achieve_already_claimed": "⚠️ Already claimed or no achievements / استلمت المكافأة قبل كده أو مفيش إنجازات."
+    "no_perm": "❌ No permission / مش معاك صلاحية.", "no_role": "❌ Missing role / مش معاك الرتبة.", "server_only": "❌ Server only.",
+    "db_err": "❌ Database error.", "cooldown": "⏳ Wait {time}s.", "log_not_found": "❌ Log not found.", "log_already_reviewed": "⚠️ Already reviewed.",
+    "no_review_perm": "❌ No review permission.", "no_self_review": "❌ Cannot self-review.", "old_season_log": "❌ Old season log.", "log_rejected_ok": "✅ Log rejected.",
+    "not_tagged": "❌ Not a participant.", "already_confirmed": "✅ Already confirmed.", "part_confirmed": "✅ Participation confirmed.",
+    "daily_limit_hit": "❌ Daily limit hit.", "log_submitted": "✅ Log `#{id}` submitted.", "no_submit_perm": "❌ No submit permission.",
+    "war_min_files": "❌ War requires 2 files.", "min_one_file": "❌ Attach 1 file min.", "no_review_ch": "❌ Review channel not set.", "bad_yt": "❌ Bad YouTube link.",
+    "bad_candidate": "❌ Invalid candidate.", "too_many_files": "❌ Too many files.", "bad_file_ext": "❌ Bad file ext.", "file_too_big": "❌ File too big.",
+    "total_too_big": "❌ Total size too big.", "points_msg": "💰 {member}: **{total}** pts.", "no_points_yet": "ℹ️ No points yet.",
+    "lb_week": "📊 Weekly LB", "lb_season": "🏆 Season LB", "lb_all": "📈 All-Time LB", "no_pending": "✅ No pending logs.", "no_my_logs": "ℹ️ No logs yet.",
+    "sync_ok": "✅ Synced.", "sync_fail": "❌ Sync failed.", "crew_bad_members": "❌ Invalid members.", "no_crews": "⚠️ No crews.",
+    "crew_created": "✅ Crew **{name}** created!", "crew_exists": "❌ Name taken.", "crew_bad_name": "❌ Name must be 2-40 chars.", "crew_bad_owner": "❌ Owner must be real.",
+    "shop_title": "🏪 Shop", "shop_desc": "Buy with `/buy`", "shop_empty": "⚠️ Shop is empty.", "shop_bought": "✅ Bought **{item}** for {price} pts.",
+    "shop_no_points": "❌ Need **{price}**, have **{points}**.", "streak_title": "🔥 Streak", "streak_desc": "Current: **{current}** | Max: **{max}**",
+    "achieve_title": "🏆 Achievement!", "achieve_desc": "Congrats {user}! Unlocked **{name}**!\nClaim: `/claim-achievement`", "quest_title": "🎯 Quests",
+    "event_title": "📅 Event: {title}", "event_desc": "**Time:** {time}\nConfirm attendance!", "event_joined": "✅ Joined!", "event_left": "❌ Left.",
+    "role_created": "✅ Role {role} created for {member}!", "role_created_free": "✅ Role {role} created (Free)!", "achieve_claimed": "✅ Claimed **{name}**!",
+    "achieve_already_claimed": "⚠️ Already claimed."
 }
 
 def tr(key: str, **kw) -> str:
@@ -308,12 +237,7 @@ CREATE TABLE IF NOT EXISTS links(guild_id INTEGER NOT NULL, user_id INTEGER NOT 
 CREATE TABLE IF NOT EXISTS season_archive(season TEXT, guild_id INTEGER, user_id INTEGER, points INTEGER, PRIMARY KEY(season, guild_id, user_id));
 CREATE TABLE IF NOT EXISTS cmd_roles(guild_id INTEGER, cmd_name TEXT, role_id INTEGER, PRIMARY KEY(guild_id, cmd_name));
 CREATE TABLE IF NOT EXISTS cmd_users(guild_id INTEGER, cmd_name TEXT, user_id INTEGER, PRIMARY KEY(guild_id, cmd_name, user_id));
-CREATE TABLE IF NOT EXISTS crews(
-    guild_id INTEGER, crew_name TEXT, owner_id INTEGER, captains_data TEXT, voice_captains_data TEXT,
-    team_z_data TEXT, team_y_data TEXT, team_x_data TEXT, team_s_data TEXT, team_a_data TEXT,
-    team_z_commanders_data TEXT, team_y_commanders_data TEXT, team_x_commanders_data TEXT, team_s_commanders_data TEXT, team_a_commanders_data TEXT,
-    created_at TEXT, PRIMARY KEY(guild_id, crew_name)
-);
+CREATE TABLE IF NOT EXISTS crews(guild_id INTEGER, crew_name TEXT, owner_id INTEGER, captains_data TEXT, created_at TEXT, PRIMARY KEY(guild_id, crew_name));
 CREATE TABLE IF NOT EXISTS custom_settings(guild_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(guild_id, key));
 CREATE TABLE IF NOT EXISTS custom_messages(guild_id INTEGER, key TEXT, title TEXT, description TEXT, color TEXT, PRIMARY KEY(guild_id, key));
 CREATE TABLE IF NOT EXISTS custom_roles(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_id INTEGER NOT NULL UNIQUE, created_at TEXT NOT NULL);
@@ -336,59 +260,33 @@ CREATE TABLE IF NOT EXISTS ai_settings(guild_id INTEGER, key TEXT, value TEXT, P
 CREATE TABLE IF NOT EXISTS ai_allow(guild_id INTEGER, user_id INTEGER, PRIMARY KEY(guild_id, user_id));
 CREATE TABLE IF NOT EXISTS ai_deny(guild_id INTEGER, user_id INTEGER, PRIMARY KEY(guild_id, user_id));
 CREATE TABLE IF NOT EXISTS ai_admin_users(guild_id INTEGER, user_id INTEGER, PRIMARY KEY(guild_id, user_id));
+CREATE TABLE IF NOT EXISTS ai_memory(guild_id INTEGER, user_id INTEGER, history TEXT, PRIMARY KEY(guild_id, user_id));
+CREATE TABLE IF NOT EXISTS ai_mention_roles(guild_id INTEGER, role_id INTEGER, PRIMARY KEY(guild_id, role_id));
+CREATE TABLE IF NOT EXISTS auto_replies(guild_id INTEGER, trigger_word TEXT, reply TEXT, PRIMARY KEY(guild_id, trigger_word));
+CREATE TABLE IF NOT EXISTS reaction_roles(guild_id INTEGER, message_id INTEGER, emoji TEXT, role_id INTEGER, PRIMARY KEY(guild_id, message_id, emoji));
+CREATE TABLE IF NOT EXISTS tournaments(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, name TEXT, max_players INTEGER, status TEXT);
+CREATE TABLE IF NOT EXISTS tournament_players(tournament_id INTEGER, user_id INTEGER, PRIMARY KEY(tournament_id, user_id));
+CREATE TABLE IF NOT EXISTS tournament_matches(tournament_id INTEGER, round INTEGER, p1_id INTEGER, p2_id INTEGER, winner_id INTEGER);
 """
 
-LEGACY_COPY = {
-    "settings": "INSERT OR IGNORE INTO settings(guild_id,key,value) SELECT 0, key, CAST(value AS TEXT) FROM settings_legacy",
-    "members": "INSERT OR IGNORE INTO members(guild_id,user_id,points) SELECT 0, user_id, points FROM members_legacy",
-    "links": "INSERT OR IGNORE INTO links(guild_id,user_id,roblox_id,roblox_name) SELECT 0, user_id, roblox_id, roblox_name FROM links_legacy",
-    "season_archive": "INSERT OR IGNORE INTO season_archive(season,guild_id,user_id,points) SELECT season, 0, user_id, points FROM season_archive_legacy",
-    "point_events": "INSERT INTO point_events(guild_id,log_id,user_id,points,created_at,type,season_id) SELECT 0, log_id, user_id, points, created_at, 'log', 'main' FROM point_events_legacy",
-}
+LEGACY_COPY = {}
 LOG_COLUMNS = [("guild_id", "INTEGER NOT NULL DEFAULT 0"), ("review_channel", "INTEGER"), ("review_msg", "INTEGER"), ("public_channel", "INTEGER"), ("public_msg", "INTEGER"), ("reviewed_at", "TEXT"), ("reminded", "INTEGER DEFAULT 0"), ("parent_id", "INTEGER"), ("season_id", "TEXT DEFAULT 'main'")]
-LEGACY_TYPE_MAP = {"outside": "1v1", "internal": "training"}
-LEGACY_POINT_KEYS = {"points:outside_win": "points:1v1_win", "points:outside_loss": "points:1v1_loss", "points:internal": "points:training", "template:outside": "template:1v1", "template:internal": "template:training"}
-
-INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_logs_guild_status ON logs(guild_id, status);
-CREATE INDEX IF NOT EXISTS idx_logs_author_created ON logs(guild_id, author_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_logs_season ON logs(guild_id, season_id);
-CREATE INDEX IF NOT EXISTS idx_point_events_guild_season ON point_events(guild_id, season_id);
-CREATE INDEX IF NOT EXISTS idx_point_events_user ON point_events(guild_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_point_events_created ON point_events(guild_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_point_events_log ON point_events(log_id);
-CREATE INDEX IF NOT EXISTS idx_point_events_season_user ON point_events(guild_id, season_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_logs_parent ON logs(parent_id);
-CREATE INDEX IF NOT EXISTS idx_hashes_hash ON hashes(hash);
-CREATE INDEX IF NOT EXISTS idx_cmd_roles_guild ON cmd_roles(guild_id);
-"""
+INDEXES = ""
 
 LOG_ID_RE = re.compile(r"`Log #(\d+)`")
 LOG_ID_FALLBACK_RE = re.compile(r"Log #(\d+)")
 TEMPLATE_VAR_RE = re.compile(r"\{(\w{1,32})\}")
 
-def now_utc():
-    return dt.datetime.now(timezone.utc)
+def now_utc(): return dt.datetime.now(timezone.utc)
 
 def owner_id():
-    try:
-        return int(os.getenv("OWNER_ID") or getattr(config, "OWNER_ID", 0) or 0)
-    except (ValueError, TypeError):
-        return 0
+    try: return int(os.getenv("OWNER_ID") or getattr(config, "OWNER_ID", 0) or 0)
+    except (ValueError, TypeError): return 0
 
-_ALLOWED_TABLES = {
-    "settings", "members", "guild_channels", "logs", "hashes", "guild_cfg", "role_perms",
-    "point_events", "links", "season_archive", "cmd_roles", "cmd_users", "crews",
-    "custom_settings", "custom_messages", "custom_roles", "temp_voice_rooms", "streaks",
-    "shop_items", "achievements", "user_achievements", "quests", "events", "tickets",
-    "daily_bonus", "bios", "notif_settings", "lfg_allowed_roles", "votes", "temp_perms",
-    "log_emojis", "ai_settings", "ai_allow", "ai_deny", "ai_admin_users",
-    "settings_legacy", "members_legacy", "links_legacy", "season_archive_legacy", "point_events_legacy",
-}
+_ALLOWED_TABLES = {t for t in SCHEMA.split("CREATE TABLE IF NOT EXISTS ")[1:] for t in [t.split("(")[0].strip()]}
 
 async def table_columns(db, table):
-    if table not in _ALLOWED_TABLES:
-        raise ValueError(f"Invalid table name: {table}")
+    if table not in _ALLOWED_TABLES: raise ValueError(f"Invalid table: {table}")
     cur = await db.execute(f"PRAGMA table_info({table})")
     return [r[1] for r in await cur.fetchall()]
 
@@ -396,73 +294,8 @@ async def init_db():
     async with aiosqlite.connect(DB) as db:
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA busy_timeout=5000;")
-        
-        for table in LEGACY_COPY:
-            cols = await table_columns(db, table)
-            if cols and "guild_id" not in cols and not await table_columns(db, table + "_legacy"):
-                await db.execute(f"ALTER TABLE {table} RENAME TO {table}_legacy")
-                
         await db.executescript(SCHEMA)
-
-        crew_column_migrations = {
-            "guild_id": "INTEGER NOT NULL DEFAULT 0", "crew_name": "TEXT NOT NULL DEFAULT ''", "owner_id": "INTEGER NOT NULL DEFAULT 0",
-            "captains_data": "TEXT NOT NULL DEFAULT '[]'", "voice_captains_data": "TEXT NOT NULL DEFAULT '[]'",
-            "team_z_data": "TEXT NOT NULL DEFAULT '[]'", "team_y_data": "TEXT NOT NULL DEFAULT '[]'", "team_x_data": "TEXT NOT NULL DEFAULT '[]'",
-            "team_s_data": "TEXT NOT NULL DEFAULT '[]'", "team_a_data": "TEXT NOT NULL DEFAULT '[]'",
-            "team_z_commanders_data": "TEXT NOT NULL DEFAULT '[]'", "team_y_commanders_data": "TEXT NOT NULL DEFAULT '[]'",
-            "team_x_commanders_data": "TEXT NOT NULL DEFAULT '[]'", "team_s_commanders_data": "TEXT NOT NULL DEFAULT '[]'",
-            "team_a_commanders_data": "TEXT NOT NULL DEFAULT '[]'", "created_at": "TEXT NOT NULL DEFAULT ''",
-        }
-        crew_cols = await table_columns(db, "crews")
-        for col, definition in crew_column_migrations.items():
-            if col not in crew_cols:
-                await db.execute(f"ALTER TABLE crews ADD COLUMN {col} {definition}")
-
-        migrated_members = False
-        for table, copy_sql in LEGACY_COPY.items():
-            if await table_columns(db, table + "_legacy"):
-                await db.execute(copy_sql)
-                await db.execute(f"DROP TABLE {table}_legacy")
-                migrated_members = migrated_members or table == "members"
-                
-        if migrated_members:
-            await db.execute(
-                "INSERT INTO point_events(guild_id, log_id, user_id, points, created_at, type, season_id) "
-                "SELECT 0, NULL, m.user_id, m.points - COALESCE((SELECT SUM(e.points) FROM point_events e "
-                "WHERE e.guild_id=0 AND e.user_id=m.user_id AND e.season_id='main'), 0), ?, 'opening', 'main' "
-                "FROM members m WHERE m.guild_id=0 AND m.points - COALESCE((SELECT SUM(e.points) FROM point_events e "
-                "WHERE e.guild_id=0 AND e.user_id=m.user_id AND e.season_id='main'), 0) <> 0", (now_utc().isoformat(),))
-
-        have = await table_columns(db, "logs")
-        for col, decl in LOG_COLUMNS:
-            if col not in have:
-                await db.execute(f"ALTER TABLE logs ADD COLUMN {col} {decl}")
-                
-        pe = await table_columns(db, "point_events")
-        for col, decl in (("type", "TEXT DEFAULT 'log'"), ("season_id", "TEXT DEFAULT 'main'")):
-            if col not in pe:
-                await db.execute(f"ALTER TABLE point_events ADD COLUMN {col} {decl}")
-
-        for old, new in LEGACY_TYPE_MAP.items():
-            await db.execute("UPDATE logs SET type=? WHERE type=?", (new, old))
-            await db.execute("UPDATE OR IGNORE guild_cfg SET log_type=? WHERE log_type=?", (new, old))
-            await db.execute("DELETE FROM guild_cfg WHERE log_type=?", (old,))
-            await db.execute("UPDATE OR IGNORE role_perms SET log_type=? WHERE log_type=?", (new, old))
-            await db.execute("DELETE FROM role_perms WHERE log_type=?", (old,))
-            
-        for old_key, new_key in LEGACY_POINT_KEYS.items():
-            await db.execute("UPDATE OR IGNORE settings SET key=? WHERE key=?", (new_key, old_key))
-            await db.execute("DELETE FROM settings WHERE key=?", (old_key,))
-
-        cur = await db.execute("SELECT guild_id, review_channel, log_channel, audit_channel FROM guild_channels")
-        for g, r, l, a in await cur.fetchall():
-            for key, v in (("review_channel", r), ("log_channel", l), ("audit_channel", a)):
-                if v:
-                    await db.execute("INSERT OR IGNORE INTO guild_cfg VALUES(?,?,?,?)", (g, "all", key, v))
-
-        await db.executescript(INDEXES)
         await db.commit()
-
 def _read_bytes(path):
     with open(path, "rb") as f:
         return f.read()
@@ -500,17 +333,11 @@ async def raw_setting(guild_id: int, key: str):
 async def get_setting(guild_id: int, key: str):
     v = await raw_setting(guild_id, key)
     if v is not None:
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return v
-    if key.startswith("points:"):
-        return DEFAULT_POINTS.get(key[len("points:"):], 0)
-    if key.startswith("rank:"):
-        n = key[len("rank:"):]
-        return next((p for name, p in LADDER if name == n), 0)
-    if key.startswith("rule:"):
-        return RULE_DEFAULTS.get(key[len("rule:"):], 0)
+        try: return int(v)
+        except (TypeError, ValueError): return v
+    if key.startswith("points:"): return DEFAULT_POINTS.get(key[len("points:"):], 0)
+    if key.startswith("rank:"): return next((p for name, p in LADDER if name == key[len("rank:"):]), 0)
+    if key.startswith("rule:"): return RULE_DEFAULTS.get(key[len("rule:"):], 0)
     return None
 
 async def set_setting(guild_id: int, key: str, value):
@@ -520,10 +347,8 @@ async def set_setting(guild_id: int, key: str, value):
 
 async def rule(guild_id: int, name: str) -> int:
     v = await get_setting(guild_id, "rule:" + name)
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return int(RULE_DEFAULTS.get(name, 0))
+    try: return int(v)
+    except (TypeError, ValueError): return int(RULE_DEFAULTS.get(name, 0))
 
 async def get_current_season(guild_id: int) -> str:
     s = await raw_setting(guild_id, "state:current_season")
@@ -549,16 +374,13 @@ async def roles_get(guild_id, log_type, kind):
         for t in (log_type, "all"):
             cur = await db.execute("SELECT role_id FROM role_perms WHERE guild_id=? AND log_type=? AND kind=?", (guild_id, t, kind))
             ids = [r[0] for r in await cur.fetchall()]
-            if ids:
-                return ids
+            if ids: return ids
     return []
 
 async def roles_edit(guild_id, log_type, kind, role_id, add: bool):
     async with aiosqlite.connect(DB) as db:
-        if add:
-            await db.execute("INSERT OR IGNORE INTO role_perms VALUES(?,?,?,?)", (guild_id, log_type, kind, role_id))
-        else:
-            await db.execute("DELETE FROM role_perms WHERE guild_id=? AND log_type=? AND kind=? AND role_id=?", (guild_id, log_type, kind, role_id))
+        if add: await db.execute("INSERT OR IGNORE INTO role_perms VALUES(?,?,?,?)", (guild_id, log_type, kind, role_id))
+        else: await db.execute("DELETE FROM role_perms WHERE guild_id=? AND log_type=? AND kind=? AND role_id=?", (guild_id, log_type, kind, role_id))
         await db.commit()
     await save_config_snapshot_json()
 
@@ -577,25 +399,21 @@ async def get_log(log_id):
 
 async def points_for_key(guild_id, key) -> int:
     v = await get_setting(guild_id, "points:" + key)
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return DEFAULT_POINTS.get(key, 0)
+    try: return int(v)
+    except (TypeError, ValueError): return DEFAULT_POINTS.get(key, 0)
 
 async def points_for(guild_id: int, log_type, result) -> int:
     key = f"{log_type}_{result}" if log_type in ("war", "1v1", "2v2") else log_type
     return await points_for_key(guild_id, key)
 
 async def recipients_for(row, data):
-    if row["type"] == "tryout":
-        return [int(data.get("tester_id") or row["author_id"])]
+    if row["type"] == "tryout": return [int(data.get("tester_id") or row["author_id"])]
     ids = [row["author_id"]]
     if row["type"] in ("war", "2v2") and await rule(row["guild_id"], "war_participants"):
         confirmed = {int(x) for x in data.get("confirmed_participants", [])}
         for x in data.get("participants", []):
             x = int(x)
-            if x not in ids and x in confirmed:
-                ids.append(x)
+            if x not in ids and x in confirmed: ids.append(x)
     return ids
 
 async def get_custom_msg(guild_id, key, default_title, default_desc, default_color=discord.Color.blue()):
@@ -603,10 +421,8 @@ async def get_custom_msg(guild_id, key, default_title, default_desc, default_col
         cur = await db.execute("SELECT title, description, color FROM custom_messages WHERE guild_id=? AND key=?", (guild_id, key))
         row = await cur.fetchone()
     if row:
-        try:
-            color = int(row[2].replace("#", ""), 16) if row[2] else default_color
-        except ValueError:
-            color = default_color
+        try: color = int(row[2].replace("#", ""), 16) if row[2] else default_color
+        except ValueError: color = default_color
         return discord.Embed(title=row[0][:256], description=row[1][:4000], color=color)
     return discord.Embed(title=default_title[:256], description=default_desc[:4000], color=default_color)
 
@@ -616,19 +432,16 @@ async def get_custom_val(guild_id, key, default):
         row = await cur.fetchone()
     return row[0] if row else default
 
-_EMOJI_CACHE = {}
-_EMOJI_CACHE_TS = {}
+_EMOJI_CACHE, _EMOJI_CACHE_TS = {}, {}
 MSG_LIMIT = 1900
 
 async def get_guild_emojis(guild_id: int) -> dict:
     now = time.time()
-    if guild_id in _EMOJI_CACHE and now - _EMOJI_CACHE_TS.get(guild_id, 0) < 300:
-        return _EMOJI_CACHE[guild_id]
+    if guild_id in _EMOJI_CACHE and now - _EMOJI_CACHE_TS.get(guild_id, 0) < 300: return _EMOJI_CACHE[guild_id]
     emojis = {}
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT slot, emoji FROM log_emojis WHERE guild_id=?", (guild_id,))
-        for slot, emoji in await cur.fetchall():
-            emojis[slot] = emoji
+        for slot, emoji in await cur.fetchall(): emojis[slot] = emoji
     _EMOJI_CACHE[guild_id] = emojis
     _EMOJI_CACHE_TS[guild_id] = now
     return emojis
@@ -638,23 +451,18 @@ def invalidate_emoji_cache(guild_id: int):
     _EMOJI_CACHE_TS.pop(guild_id, None)
 
 def build_divider(emojis: dict) -> str:
-    left = emojis.get("divider_left", "")
-    right = emojis.get("divider_right", "")
+    left, right = emojis.get("divider_left", ""), emojis.get("divider_right", "")
     core = "●▬▬▬▬▬▬▬▬▬▬▬☭   ☭▬▬▬▬▬▬▬▬▬▬▬●"
-    if left and right:
-        return f"{left}   {core}   {right}"
-    elif left:
-        return f"{left}   {core}"
-    elif right:
-        return f"{core}   {right}"
+    if left and right: return f"{left}   {core}   {right}"
+    elif left: return f"{left}   {core}"
+    elif right: return f"{core}   {right}"
     return core
 
 async def send_notification(guild, event_type, title, desc, color=discord.Color.blue()):
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT mode, target_id FROM notif_settings WHERE guild_id=? AND event_type=?", (guild.id, event_type))
         row = await cur.fetchone()
-    if not row:
-        return
+    if not row: return
     mode, target_id = row
     embed = await get_custom_msg(guild.id, f"notif_{event_type}", title, desc, color)
     if mode == "channel" and target_id:
@@ -676,10 +484,8 @@ def has_role(member, names) -> bool:
     return any(r.name.strip().casefold() in normalized for r in getattr(member, "roles", []))
 
 def is_admin(member) -> bool:
-    if not isinstance(member, discord.Member):
-        return False
-    if owner_id() and member.id == owner_id():
-        return True
+    if not isinstance(member, discord.Member): return False
+    if owner_id() and member.id == owner_id(): return True
     return member.guild_permissions.administrator
 
 TEMP_ADMIN_BLOCKED_COMMANDS = {
@@ -689,21 +495,18 @@ TEMP_ADMIN_BLOCKED_COMMANDS = {
 }
 
 async def has_temp_admin(member) -> bool:
-    if not member.guild:
-        return False
+    if not member.guild: return False
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT expires_at FROM temp_perms WHERE guild_id=? AND user_id=?", (member.guild.id, member.id))
         row = await cur.fetchone()
         if not row: return False
         try:
-            expires = dt.datetime.fromisoformat(row[0])
-            if now_utc() > expires:
+            if now_utc() > dt.datetime.fromisoformat(row[0]):
                 await db.execute("DELETE FROM temp_perms WHERE guild_id=? AND user_id=?", (member.guild.id, member.id))
                 await db.commit()
                 return False
             return True
-        except ValueError:
-            return False
+        except ValueError: return False
 
 async def is_editor(member) -> bool:
     return is_admin(member) or await has_temp_admin(member) or has_role(member, EDITOR_ROLES)
@@ -855,7 +658,6 @@ class CrewBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self._ready_once = False
-        self._ai_sessions = {}
 
     async def setup_hook(self):
         await init_db()
@@ -864,10 +666,8 @@ class CrewBot(discord.Client):
         self.add_view(CloseTicketView())
         self.add_view(EventView())
         self.add_view(VoteView())
-        try:
-            await self.http.bulk_upsert_global_commands(self.application_id, [])
-        except Exception as e:
-            print(f"⚠️ Could not clear global commands: {e}")
+        try: await self.http.bulk_upsert_global_commands(self.application_id, [])
+        except Exception as e: print(f"⚠️ Could not clear global commands: {e}")
         print("✅ Setup complete. Commands will sync per-guild.")
 
     async def sync_guild(self, guild: discord.Guild):
@@ -884,20 +684,14 @@ class CrewBot(discord.Client):
         print(f"Bot logged in as {self.user} (Version {BOT_VERSION})")
         if not self._ready_once:
             self._ready_once = True
-            try:
-                if len(self.guilds) == 1: await adopt_legacy_data(self.guilds[0].id)
-            except Exception as e: print(f"⚠️ Legacy data adoption failed: {e}")
-            for g in self.guilds:
-                await self.sync_guild(g)
-                try: await check_and_notify_auto_update(g)
-                except Exception as e: print(f"⚠️ Update notice failed for {g.id}: {e}")
+            for g in self.guilds: await self.sync_guild(g)
         if not maintenance.is_running(): maintenance.start()
 
     async def on_guild_join(self, guild):
         await self.sync_guild(guild)
         try:
             target = guild.system_channel or next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
-            if target: await target.send(f"👋 Thanks for adding **DragonSlayerBot**!\nUse `/help` for a full manual. Admins: run `/setchannel`.")
+            if target: await target.send(f"👋 Thanks for adding **DragonSlayerBot**!\nUse `/help` for a full manual.")
         except Exception as e: print(f"⚠️ Welcome message failed: {e}")
 
 bot = CrewBot()
@@ -945,7 +739,7 @@ def render(log_id, log_type, author_id, data, result, flags=None, status="pendin
         "crew": d("crew"), "my_fighter": d("my_fighter"), "opponent": d("opponent"),
         "participants": d("participants") if not participants else " ".join(f"<@{p}>" for p in participants),
         "candidate": data.get("candidate", "-"), "roblox": f"({clip(data['roblox'], 40)})" if data.get("roblox") else "",
-        "p1": d("p1"), "p2": d("p2"), "result": labels.get(result, result) if result else "-",
+        "result": labels.get(result, result) if result else "-",
         "ANGEL": guild_emojis.get("angel", ""), "MOON": guild_emojis.get("moon", ""), "ARROW": guild_emojis.get("arrow", ""),
         "CROWN": guild_emojis.get("crown", ""), "DIVIDER": divider,
         "notes_line": f"      • **Notes:** {d('notes')}\n" if data.get("notes") else "",
@@ -990,26 +784,22 @@ async def update_member_rank(guild, member, total, allow_demote=False):
     elif target <= current: return None
     target_role = roles[target] if 0 <= target < len(roles) else None
     if target >= 0 and target_role is None:
-        await audit(f"⚠️ Role for **{ladder[target][0]}** was not found in this server.", guild)
+        await audit(f"⚠️ Role for **{ladder[target][0]}** not found for {member.mention}.", guild)
         return None
     to_add = [target_role] if target_role and target_role not in member.roles else []
     to_remove = [roles[idx] for idx in held if roles[idx] != target_role]
     try:
         if to_add: await member.add_roles(*to_add, reason="Rank update")
         if to_remove: await member.remove_roles(*to_remove, reason="Rank update")
-    except discord.Forbidden:
-        await audit(f"❌ [Role Error] Can't manage roles for {member.mention}.", guild)
-        return None
-    except discord.HTTPException as e:
-        await audit(f"❌ [API Error] Rank update failed: {e}", guild)
-        return None
+    except discord.Forbidden: return None
+    except discord.HTTPException: return None
     if target_role and target > current:
         ch_id = await cfg_get(guild.id, "all", "log_channel")
         ch = guild.get_channel(ch_id) if ch_id else None
         if ch:
-            try: await ch.send(f"🎉 {member.mention} has been promoted to {target_role.mention}!", allowed_mentions=discord.AllowedMentions(users=[member], roles=False))
+            try: await ch.send(f"🎉 {member.mention} promoted to {target_role.mention}!", allowed_mentions=discord.AllowedMentions(users=[member], roles=False))
             except discord.HTTPException: pass
-        try: await member.send(f"🎉 You've been promoted to **{target_role.name}** in **{guild.name}**!")
+        try: await member.send(f"🎉 Promoted to **{target_role.name}** in **{guild.name}**!")
         except discord.HTTPException: pass
     return target_role
 
@@ -1139,10 +929,8 @@ class LogModal(discord.ui.Modal):
             if blobs and total_size <= limit_bytes:
                 try:
                     sent = await ch.send(content=content, view=ReviewView(), allowed_mentions=am, files=[discord.File(io.BytesIO(b), a.filename) for a, b in blobs])
-                except discord.Forbidden:
-                    raise
-                except discord.HTTPException:
-                    sent = None
+                except discord.Forbidden: raise
+                except discord.HTTPException: sent = None
             if sent is None:
                 sent = await ch.send(content=content, view=ReviewView(), allowed_mentions=am)
                 if proof_urls:
@@ -1155,7 +943,6 @@ class LogModal(discord.ui.Modal):
             await dm_owner(f"⚠️ {i.user.mention} submitted Log #{log_id} with warnings:\n" + "\n".join(flags))
         await i.followup.send(tr("log_submitted", id=log_id), ephemeral=True)
 
-# ================================================================ تعديل اللوج (Edit Log)
 class EditLogModal(discord.ui.Modal):
     def __init__(self, log_id, log_type, result, files, extra, defaults=None):
         super().__init__(title=f"Edit Log #{log_id} / تعديل اللوج")
@@ -1188,7 +975,7 @@ class EditLogModal(discord.ui.Modal):
             return await i.followup.send(tr("log_not_found"), ephemeral=True)
         
         if row["status"] != "pending":
-            return await i.followup.send("❌ Only pending logs can be edited. / يمكن فقط تعديل اللوجات قيد المراجعة.", ephemeral=True)
+            return await i.followup.send("❌ Only pending logs can be edited.", ephemeral=True)
         
         new_data = {k: v.value.strip() for k, v in self.inputs.items()}
         new_data.update(self.extra)
@@ -1223,26 +1010,22 @@ class EditLogModal(discord.ui.Modal):
                 text = render(self.log_id, row["type"], row["author_id"], new_data, row["result"], flags, custom_template=custom_tmpl, guild_emojis=guild_emojis)
                 await msg.edit(content=text, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException as e:
-            print(f"⚠️ Could not update review message for Log #{self.log_id}: {e}")
+            print(f"⚠️ Could not update review message: {e}")
         
         await audit(f"✏️ {i.user.mention} edited Log #{self.log_id}", i.guild)
-        await i.followup.send(f"✅ Log #{self.log_id} updated successfully. / تم تحديث اللوج بنجاح.", ephemeral=True)
+        await i.followup.send(f"✅ Log #{self.log_id} updated successfully.", ephemeral=True)
 
-@bot.tree.command(name="edit-log", description="Edit a pending log's details / تعديل بيانات لوج قيد المراجعة")
+@bot.tree.command(name="edit-log", description="Edit a pending log's details / تعديل بيانات لوج")
 @app_commands.checks.cooldown(1, 15.0)
-@app_commands.describe(log_id="Log ID to edit / رقم اللوج المراد تعديله")
 async def edit_log(i: discord.Interaction, log_id: int):
     if not i.guild or not isinstance(i.user, discord.Member):
         return await i.response.send_message(tr("server_only"), ephemeral=True)
     
     row = await get_log(log_id)
-    
     if not row or row["guild_id"] != i.guild.id or row["author_id"] != i.user.id:
         return await i.response.send_message(tr("log_not_found"), ephemeral=True)
-    
     if row["status"] != "pending":
-        return await i.response.send_message("❌ Only pending logs can be edited. Use `/resubmit` for rejected ones.", ephemeral=True)
-    
+        return await i.response.send_message("❌ Only pending logs can be edited.", ephemeral=True)
     if row["type"] not in LOG_TYPES:
         return await i.response.send_message("❌ Invalid log type.", ephemeral=True)
     
@@ -1253,8 +1036,7 @@ async def edit_log(i: discord.Interaction, log_id: int):
         if ch and row["review_msg"]:
             old = await ch.fetch_message(row["review_msg"])
             files = list(old.attachments)
-    except discord.HTTPException:
-        pass
+    except discord.HTTPException: pass
     
     if not files and data.get("proof_urls"):
         files = [u for u in data["proof_urls"] if isinstance(u, str)]
@@ -1278,56 +1060,36 @@ async def inspect_blobs(blobs, guild_id):
     return hashes, flags
 
 async def check_anti_cheat(i: discord.Interaction, log_type):
-    if is_admin(i.user) or await has_temp_admin(i.user):
-        return True
-
+    if is_admin(i.user) or await has_temp_admin(i.user): return True
     if (now_utc() - i.user.created_at).days < 7:
-        await i.response.send_message("⚠️ **Log Rejected:** Your account is too new (less than 7 days).", ephemeral=True)
+        await i.response.send_message("⚠️ **Log Rejected:** Your account is too new.", ephemeral=True)
         return False
-        
     since = (now_utc() - timedelta(hours=1)).isoformat()
     async with aiosqlite.connect(DB) as db:
-        cur = await db.execute(
-            "SELECT COUNT(*) FROM logs WHERE guild_id=? AND author_id=? AND created_at>=? AND status IN ('pending', 'accepted')",
-            (i.guild.id, i.user.id, since)
-        )
+        cur = await db.execute("SELECT COUNT(*) FROM logs WHERE guild_id=? AND author_id=? AND created_at>=? AND status IN ('pending', 'accepted')", (i.guild.id, i.user.id, since))
         if (await cur.fetchone())[0] >= 5:
-            await i.response.send_message("⚠️ **Log Rejected:** You are submitting logs too fast! Please wait.", ephemeral=True)
+            await i.response.send_message("⚠️ **Log Rejected:** Too fast! Please wait.", ephemeral=True)
             return False
     return True
 
 async def start_log(i: discord.Interaction, log_type, result, files: List[Optional[discord.Attachment]], extra=None):
     if not i.guild or not isinstance(i.user, discord.Member):
         return await i.response.send_message(tr("server_only"), ephemeral=True)
-        
-    if not await check_anti_cheat(i, log_type):
-        return
-        
+    if not await check_anti_cheat(i, log_type): return
     files = [f for f in files if f is not None]
-    
-    if not await check_cmd_perm(i, f"log-{log_type}"):
-        return await i.response.send_message(tr("no_role"), ephemeral=True)
-    if not await can_submit(i.user, log_type):
-        return await i.response.send_message(tr("no_submit_perm"), ephemeral=True)
-        
-    if log_type == "war" and len(files) < 2:
-        return await i.response.send_message(tr("war_min_files"), ephemeral=True)
-    if log_type != "war" and len(files) < 1:
-        return await i.response.send_message(tr("min_one_file"), ephemeral=True)
-        
+    if not await check_cmd_perm(i, f"log-{log_type}"): return await i.response.send_message(tr("no_role"), ephemeral=True)
+    if not await can_submit(i.user, log_type): return await i.response.send_message(tr("no_submit_perm"), ephemeral=True)
+    if log_type == "war" and len(files) < 2: return await i.response.send_message(tr("war_min_files"), ephemeral=True)
+    if log_type != "war" and len(files) < 1: return await i.response.send_message(tr("min_one_file"), ephemeral=True)
     rid = await cfg_get(i.guild.id, log_type, "review_channel")
-    if not rid or not i.guild.get_channel(rid):
-        return await i.response.send_message(tr("no_review_ch"), ephemeral=True)
-        
+    if not rid or not i.guild.get_channel(rid): return await i.response.send_message(tr("no_review_ch"), ephemeral=True)
     limit = await rule(i.guild.id, "daily_limit")
     if limit:
         since = (now_utc() - timedelta(hours=24)).isoformat()
         async with aiosqlite.connect(DB) as db:
             cur = await db.execute("SELECT COUNT(*) FROM logs WHERE guild_id=? AND author_id=? AND created_at>=? AND status IN ('pending','accepted')", (i.guild.id, i.user.id, since))
-            n = (await cur.fetchone())[0]
-        if n >= limit:
-            return await i.response.send_message(tr("daily_limit_hit", limit=limit), ephemeral=True)
-            
+            if (await cur.fetchone())[0] >= limit:
+                return await i.response.send_message(tr("daily_limit_hit", limit=limit), ephemeral=True)
     await i.response.send_modal(LogModal(log_type, result, files, extra or {}))
 
 async def youtube_extra(i: discord.Interaction, youtube_link: Optional[str], extra: dict):
@@ -1340,7 +1102,7 @@ async def youtube_extra(i: discord.Interaction, youtube_link: Optional[str], ext
     return True
 
 # ================================================================ أوامر اللوجات
-@bot.tree.command(name="log-war", description="Log a Crew War (min 2 attachments) / تسجيل حرب كرو")
+@bot.tree.command(name="log-war", description="Log a Crew War (min 2 attachments)")
 @app_commands.checks.cooldown(1, 60.0)
 @app_commands.choices(result=RESULT_CHOICES)
 async def log_war(i: discord.Interaction, result: app_commands.Choice[str], file1: discord.Attachment, file2: discord.Attachment, file3: Optional[discord.Attachment] = None, youtube_link: Optional[str] = None, player1: Optional[discord.Member] = None, player2: Optional[discord.Member] = None, player3: Optional[discord.Member] = None, player4: Optional[discord.Member] = None):
@@ -1349,7 +1111,7 @@ async def log_war(i: discord.Interaction, result: app_commands.Choice[str], file
     if not await youtube_extra(i, youtube_link, extra): return
     await start_log(i, "war", result.value, [file1, file2, file3], extra)
 
-@bot.tree.command(name="log-1v1", description="Log a 1v1 fight / تسجيل فايت 1 ضد 1")
+@bot.tree.command(name="log-1v1", description="Log a 1v1 fight")
 @app_commands.checks.cooldown(1, 30.0)
 @app_commands.choices(result=RESULT_CHOICES)
 async def log_1v1(i: discord.Interaction, result: app_commands.Choice[str], proof1: discord.Attachment, proof2: Optional[discord.Attachment] = None, youtube_link: Optional[str] = None):
@@ -1357,7 +1119,7 @@ async def log_1v1(i: discord.Interaction, result: app_commands.Choice[str], proo
     if not await youtube_extra(i, youtube_link, extra): return
     await start_log(i, "1v1", result.value, [proof1, proof2], extra)
 
-@bot.tree.command(name="log-2v2", description="Log a 2v2 fight / تسجيل فايت 2 ضد 2")
+@bot.tree.command(name="log-2v2", description="Log a 2v2 fight")
 @app_commands.checks.cooldown(1, 30.0)
 @app_commands.choices(result=RESULT_CHOICES)
 async def log_2v2(i: discord.Interaction, result: app_commands.Choice[str], proof1: discord.Attachment, proof2: Optional[discord.Attachment] = None, youtube_link: Optional[str] = None, teammate: Optional[discord.Member] = None):
@@ -1366,43 +1128,32 @@ async def log_2v2(i: discord.Interaction, result: app_commands.Choice[str], proo
     if not await youtube_extra(i, youtube_link, extra): return
     await start_log(i, "2v2", result.value, [proof1, proof2], extra)
 
-@bot.tree.command(name="log-training", description="Log training / تسجيل تدريب")
+@bot.tree.command(name="log-training", description="Log training")
 @app_commands.checks.cooldown(1, 30.0)
 async def log_training(i: discord.Interaction, proof1: discord.Attachment, proof2: Optional[discord.Attachment] = None):
     await start_log(i, "training", None, [proof1, proof2])
 
-@bot.tree.command(name="log-tryout", description="Log a tryout / تسجيل تراي أوت")
+@bot.tree.command(name="log-tryout", description="Log a tryout")
 @app_commands.checks.cooldown(1, 60.0)
 @app_commands.choices(result=TRYOUT_CHOICES)
 async def log_tryout(i: discord.Interaction, candidate: discord.Member, result: app_commands.Choice[str], proof: discord.Attachment):
-    if candidate.bot or candidate.id == i.user.id:
-        return await i.response.send_message(tr("bad_candidate"), ephemeral=True)
+    if candidate.bot or candidate.id == i.user.id: return await i.response.send_message(tr("bad_candidate"), ephemeral=True)
     extra = {"candidate_id": candidate.id, "candidate": candidate.mention, "tester_id": i.user.id}
     await start_log(i, "tryout", result.value, [proof], extra)
 
-@bot.tree.command(name="resubmit", description="Fix and resend a rejected log / إعادة إرسال لوج مرفوض")
+@bot.tree.command(name="resubmit", description="Fix and resend a rejected log")
 @app_commands.checks.cooldown(1, 15.0)
 async def resubmit(i: discord.Interaction, log_id: int):
-    if not i.guild or not isinstance(i.user, discord.Member):
-        return await i.response.send_message(tr("server_only"), ephemeral=True)
+    if not i.guild or not isinstance(i.user, discord.Member): return await i.response.send_message(tr("server_only"), ephemeral=True)
     row = await get_log(log_id)
-    
-    if not row or row["guild_id"] != i.guild.id or row["author_id"] != i.user.id:
-        return await i.response.send_message(tr("log_not_found"), ephemeral=True)
-    if row["status"] != "rejected" or row["type"] not in LOG_TYPES:
-        return await i.response.send_message("❌ This log is not rejected.", ephemeral=True)
-        
-    if not await check_cmd_perm(i, f"log-{row['type']}"):
-        return await i.response.send_message(tr("no_role"), ephemeral=True)
-    if not await can_submit(i.user, row["type"]):
-        return await i.response.send_message(tr("no_submit_perm"), ephemeral=True)
-
+    if not row or row["guild_id"] != i.guild.id or row["author_id"] != i.user.id: return await i.response.send_message(tr("log_not_found"), ephemeral=True)
+    if row["status"] != "rejected" or row["type"] not in LOG_TYPES: return await i.response.send_message("❌ This log is not rejected.", ephemeral=True)
+    if not await check_cmd_perm(i, f"log-{row['type']}"): return await i.response.send_message(tr("no_role"), ephemeral=True)
+    if not await can_submit(i.user, row["type"]): return await i.response.send_message(tr("no_submit_perm"), ephemeral=True)
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT id FROM logs WHERE parent_id=? AND status IN ('pending','accepted') LIMIT 1", (log_id,))
         child = await cur.fetchone()
-    if child:
-        return await i.response.send_message(f"This log was already resubmitted as #{child[0]}.", ephemeral=True)
-        
+    if child: return await i.response.send_message(f"This log was already resubmitted as #{child[0]}.", ephemeral=True)
     data = json.loads(row["data"] or "{}")
     files = []
     try:
@@ -1410,30 +1161,20 @@ async def resubmit(i: discord.Interaction, log_id: int):
         if ch and row["review_msg"]:
             old = await ch.fetch_message(row["review_msg"])
             files = list(old.attachments)
-    except discord.HTTPException:
-        pass
-        
-    if not files and data.get("proof_urls"):
-        files = [u for u in data["proof_urls"] if isinstance(u, str)]
-    if not files:
-        return await i.response.send_message("Could not fetch the old attachments. Please submit a new log.", ephemeral=True)
-        
+    except discord.HTTPException: pass
+    if not files and data.get("proof_urls"): files = [u for u in data["proof_urls"] if isinstance(u, str)]
+    if not files: return await i.response.send_message("Could not fetch the old attachments.", ephemeral=True)
     extra = {k: data[k] for k in ("candidate_id", "candidate", "tester_id", "participants", "youtube_link") if k in data}
     await i.response.send_modal(LogModal(row["type"], row["result"], files, extra, defaults=data, parent_id=log_id))
 
-@bot.tree.command(name="revoke-log", description="Cancel an accepted log / إلغاء لوج مقبول")
+@bot.tree.command(name="revoke-log", description="Cancel an accepted log")
 @app_commands.checks.cooldown(1, 10.0)
 async def revoke_log(i: discord.Interaction, log_id: int, reason: app_commands.Range[str, 1, 300]):
     if not await gate(i, "revoke-log"): return
     row = await get_log(log_id)
-    
-    if not row or row["guild_id"] != i.guild.id or row["status"] != "accepted":
-        return await i.response.send_message(tr("log_not_found"), ephemeral=True)
-    if not await can_review(i.user, row["type"]):
-        return await i.response.send_message(tr("no_perm"), ephemeral=True)
-    if (row["season_id"] or "main") != await get_current_season(i.guild.id):
-        return await i.response.send_message(tr("old_season_log"), ephemeral=True)
-        
+    if not row or row["guild_id"] != i.guild.id or row["status"] != "accepted": return await i.response.send_message(tr("log_not_found"), ephemeral=True)
+    if not await can_review(i.user, row["type"]): return await i.response.send_message(tr("no_perm"), ephemeral=True)
+    if (row["season_id"] or "main") != await get_current_season(i.guild.id): return await i.response.send_message(tr("old_season_log"), ephemeral=True)
     await i.response.defer(ephemeral=True)
     async with aiosqlite.connect(DB) as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -1442,49 +1183,29 @@ async def revoke_log(i: discord.Interaction, log_id: int, reason: app_commands.R
             if cur.rowcount == 0:
                 await db.rollback()
                 return await i.followup.send(tr("log_already_reviewed"), ephemeral=True)
-                
             cur = await db.execute("SELECT user_id, SUM(points) FROM point_events WHERE guild_id=? AND log_id=? AND type='log' GROUP BY user_id", (i.guild.id, log_id))
             events = await cur.fetchall()
             stamp = now_utc().isoformat()
-            
             for uid, p in events:
                 await db.execute("UPDATE members SET points = points - ? WHERE guild_id=? AND user_id=?", (p, i.guild.id, uid))
                 await db.execute("INSERT INTO point_events(guild_id, log_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?,?)", (i.guild.id, log_id, uid, -p, stamp, "revoke", row["season_id"] or "main"))
             await db.commit()
         except Exception as e:
             await db.rollback()
-            print(f"❌ revoke DB error: {e}")
             return await i.followup.send(tr("db_err"), ephemeral=True)
-
     data = json.loads(row["data"] or "{}")
     custom_tmpl = await get_custom_template(i.guild.id, row["type"])
     guild_emojis = await get_guild_emojis(i.guild.id)
     text = render(log_id, row["type"], row["author_id"], data, row["result"], None, "revoked", reviewer_id=i.user.id, reason=reason, custom_template=custom_tmpl, guild_emojis=guild_emojis)
-    
     for ch_id, msg_id in ((row["review_channel"], row["review_msg"]), (row["public_channel"], row["public_msg"])):
         if ch_id and msg_id:
             try:
                 ch = i.guild.get_channel(ch_id)
                 msg = await ch.fetch_message(msg_id)
                 await msg.edit(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
-            except (discord.HTTPException, AttributeError):
-                pass
-
-    warnings = []
-    for uid, _ in events:
-        member = i.guild.get_member(uid)
-        if not member: continue
-        async with aiosqlite.connect(DB) as db:
-            cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, uid))
-            res = await cur.fetchone()
-        if await rank_is_above_points(i.guild, member, res[0] if res else 0):
-            warnings.append(member.mention)
-            
+            except (discord.HTTPException, AttributeError): pass
     await audit(f"🚫 {i.user.mention} revoked Log #{log_id}. Reason: {reason}", i.guild)
-    msg = f"✅ Successfully revoked Log #{log_id}."
-    if warnings:
-        msg += ("\n⚠️ These members now hold a rank above their points: " + " ".join(warnings) + "\nUse `/sync-ranks demote:True` to fix.")
-    await i.followup.send(msg, ephemeral=True)
+    await i.followup.send(f"✅ Successfully revoked Log #{log_id}.", ephemeral=True)
 
 # ================================================================ المراجعة والأزرار
 async def resolve_log(i: discord.Interaction, need_pending=True):
@@ -1493,7 +1214,6 @@ async def resolve_log(i: discord.Interaction, need_pending=True):
         return None
     log_id = parse_log_id(i.message)
     row = await get_log(log_id) if log_id else None
-    
     if (not row or row["guild_id"] != i.guild.id or (row["review_msg"] and row["review_msg"] != i.message.id)):
         await i.response.send_message(tr("log_not_found"), ephemeral=True)
         return None
@@ -1505,26 +1225,18 @@ async def resolve_log(i: discord.Interaction, need_pending=True):
 async def accept_log(i: discord.Interaction):
     row = await resolve_log(i)
     if not row: return
-    
-    if not await can_review(i.user, row["type"]):
-        return await i.response.send_message(tr("no_review_perm"), ephemeral=True)
-    if row["author_id"] == i.user.id:
-        return await i.response.send_message(tr("no_self_review"), ephemeral=True)
-        
+    if not await can_review(i.user, row["type"]): return await i.response.send_message(tr("no_review_perm"), ephemeral=True)
+    if row["author_id"] == i.user.id: return await i.response.send_message(tr("no_self_review"), ephemeral=True)
     season = row["season_id"] or "main"
-    if season != await get_current_season(i.guild.id):
-        return await i.response.send_message(tr("old_season_log"), ephemeral=True)
-        
+    if season != await get_current_season(i.guild.id): return await i.response.send_message(tr("old_season_log"), ephemeral=True)
     await i.response.defer()
     log_id = row["id"]
-    
     data = json.loads(row["data"] or "{}")
     flags = json.loads(row["flags"] or "[]")
     pts = await points_for(i.guild.id, row["type"], row["result"])
     recips = await recipients_for(row, data)
     stamp = now_utc().isoformat()
     totals = {}
-
     async with aiosqlite.connect(DB) as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
@@ -1532,7 +1244,6 @@ async def accept_log(i: discord.Interaction):
             if cur.rowcount == 0:
                 await db.rollback()
                 return await i.followup.send(tr("log_already_reviewed"), ephemeral=True)
-                
             for uid in recips:
                 await db.execute("INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET points = points + ?", (i.guild.id, uid, pts, pts))
                 await db.execute("INSERT INTO point_events(guild_id, log_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?,?)", (i.guild.id, log_id, uid, pts, stamp, "log", season))
@@ -1541,37 +1252,26 @@ async def accept_log(i: discord.Interaction):
             await db.commit()
         except Exception as e:
             await db.rollback()
-            print(f"❌ accept_log DB error: {e}")
             return await i.followup.send(tr("db_err"), ephemeral=True)
-
     custom_tmpl = await get_custom_template(i.guild.id, row["type"])
     guild_emojis = await get_guild_emojis(i.guild.id)
     pub_id = await cfg_get(i.guild.id, row["type"], "log_channel")
     log_ch = i.guild.get_channel(pub_id) if pub_id else None
-    
     if log_ch:
         ping_id = await cfg_get(i.guild.id, row["type"], "log_ping")
         text = render(log_id, row["type"], row["author_id"], data, row["result"], None, "accepted", pts, i.user.id, pts_to=recips, custom_template=custom_tmpl, guild_emojis=guild_emojis)
         content = (f"<@&{ping_id}>\n" if ping_id else "") + text
         cand = [int(data["candidate_id"])] if row["type"] == "tryout" and data.get("candidate_id") else None
-        try:
-            files = [await a.to_file() for a in i.message.attachments]
-        except discord.HTTPException:
-            files = []
+        try: files = [await a.to_file() for a in i.message.attachments]
+        except discord.HTTPException: files = []
         try:
             sent = await log_ch.send(content=content, files=files, allowed_mentions=mentions(ping_id, cand))
             await db_exec("UPDATE logs SET public_channel=?, public_msg=? WHERE id=?", (log_ch.id, sent.id, log_id))
-        except discord.HTTPException as e:
-            await i.followup.send(f"Accepted, but couldn't post in the log channel: {e}", ephemeral=True)
-    else:
-        await i.followup.send("Accepted, but no log channel is set. Use /setchannel.", ephemeral=True)
-
+        except discord.HTTPException as e: await i.followup.send(f"Accepted, but couldn't post in log channel: {e}", ephemeral=True)
+    else: await i.followup.send("Accepted, but no log channel is set.", ephemeral=True)
     reviewed = render(log_id, row["type"], row["author_id"], data, row["result"], flags, "accepted", pts, i.user.id, pts_to=recips, custom_template=custom_tmpl, guild_emojis=guild_emojis)
-    try:
-        await i.message.edit(content=reviewed, view=None, allowed_mentions=discord.AllowedMentions.none())
-    except discord.HTTPException:
-        pass
-
+    try: await i.message.edit(content=reviewed, view=None, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException: pass
     for uid, total in totals.items():
         try:
             member = await get_member(i.guild, uid)
@@ -1582,35 +1282,25 @@ async def accept_log(i: discord.Interaction):
                 await db_exec("UPDATE members SET points = points + ? WHERE guild_id=? AND user_id=?", (streak_points, i.guild.id, uid))
                 await db_exec("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, uid, streak_points, now_utc().isoformat(), "streak", season))
             await check_achievements(i.guild, uid, total)
-        except (discord.NotFound, discord.Forbidden) as e:
-            print(f"⚠️ Failed to update rank for {uid}: {e}")
-
+        except (discord.NotFound, discord.Forbidden): pass
     if (row["type"] == "tryout" and row["result"] == "win" and data.get("candidate_id") and await rule(i.guild.id, "tryout_autorole")):
         try:
             cand_member = await get_member(i.guild, int(data["candidate_id"]))
             crew_role = find_crew_role(i.guild)
-            if crew_role and crew_role not in cand_member.roles:
-                await cand_member.add_roles(crew_role, reason="Passed tryout")
-        except (discord.NotFound, discord.Forbidden) as e:
-            await i.followup.send(f"Accepted, but couldn't give the Crew role: {e}", ephemeral=True)
+            if crew_role and crew_role not in cand_member.roles: await cand_member.add_roles(crew_role, reason="Passed tryout")
+        except (discord.NotFound, discord.Forbidden) as e: await i.followup.send(f"Accepted, but couldn't give Crew role: {e}", ephemeral=True)
 
-class RejectModal(discord.ui.Modal, title="Rejection Reason / سبب الرفض"):
-    reason = discord.ui.TextInput(label="Reason / السبب", style=discord.TextStyle.paragraph, max_length=300)
+class RejectModal(discord.ui.Modal, title="Rejection Reason"):
+    reason = discord.ui.TextInput(label="Reason", style=discord.TextStyle.paragraph, max_length=300)
     def __init__(self, log_id, message):
         super().__init__()
-        self.log_id = log_id
-        self.message = message
-    async def on_error(self, interaction, error):
-        await report_error(interaction, error)
+        self.log_id, self.message = log_id, message
     async def on_submit(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         row = await get_log(self.log_id)
-        if not row or row["guild_id"] != i.guild.id:
-            return await i.followup.send(tr("log_not_found"), ephemeral=True)
-        if not isinstance(i.user, discord.Member) or not await can_review(i.user, row["type"]):
-            return await i.followup.send(tr("no_review_perm"), ephemeral=True)
-        if row["author_id"] == i.user.id:
-            return await i.followup.send(tr("no_self_review"), ephemeral=True)
+        if not row or row["guild_id"] != i.guild.id: return await i.followup.send(tr("log_not_found"), ephemeral=True)
+        if not await can_review(i.user, row["type"]): return await i.followup.send(tr("no_review_perm"), ephemeral=True)
+        if row["author_id"] == i.user.id: return await i.followup.send(tr("no_self_review"), ephemeral=True)
         async with aiosqlite.connect(DB) as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
@@ -1621,37 +1311,31 @@ class RejectModal(discord.ui.Modal, title="Rejection Reason / سبب الرفض"
                 await db.commit()
             except Exception as e:
                 await db.rollback()
-                print(f"❌ reject DB error: {e}")
                 return await i.followup.send(tr("db_err"), ephemeral=True)
-        data = json.loads(row["data"] or "{}")
-        flags = json.loads(row["flags"] or "[]")
-        custom_tmpl = await get_custom_template(i.guild.id, row["type"])
-        guild_emojis = await get_guild_emojis(i.guild.id)
+        data, flags = json.loads(row["data"] or "{}"), json.loads(row["flags"] or "[]")
+        custom_tmpl, guild_emojis = await get_custom_template(i.guild.id, row["type"]), await get_guild_emojis(i.guild.id)
         text = render(self.log_id, row["type"], row["author_id"], data, row["result"], flags, "rejected", reviewer_id=i.user.id, reason=self.reason.value, custom_template=custom_tmpl, guild_emojis=guild_emojis)
         try: await self.message.edit(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException: pass
         await i.followup.send(tr("log_rejected_ok"), ephemeral=True)
         try:
             author = await bot.fetch_user(row["author_id"])
-            await author.send(f"❌ Log #{self.log_id} was rejected.\nReason: {self.reason.value}\n\nYou can fix it and send it again with `/resubmit log_id:{self.log_id}`")
+            await author.send(f"❌ Log #{self.log_id} was rejected.\nReason: {self.reason.value}\n\nUse `/resubmit log_id:{self.log_id}`")
         except discord.HTTPException: pass
 
 class ReviewView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-    async def on_error(self, interaction, error, item):
-        await report_error(interaction, error)
-    @discord.ui.button(label="Accept / قبول", emoji="✅", style=discord.ButtonStyle.success, custom_id="log:accept")
-    async def accept(self, i: discord.Interaction, button: discord.ui.Button):
-        await accept_log(i)
-    @discord.ui.button(label="Reject / رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id="log:reject")
+    def __init__(self): super().__init__(timeout=None)
+    async def on_error(self, interaction, error, item): await report_error(interaction, error)
+    @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="log:accept")
+    async def accept(self, i: discord.Interaction, button: discord.ui.Button): await accept_log(i)
+    @discord.ui.button(label="Reject", emoji="❌", style=discord.ButtonStyle.danger, custom_id="log:reject")
     async def reject(self, i: discord.Interaction, button: discord.ui.Button):
         row = await resolve_log(i)
         if not row: return
         if not await can_review(i.user, row["type"]): return await i.response.send_message(tr("no_review_perm"), ephemeral=True)
         if row["author_id"] == i.user.id: return await i.response.send_message(tr("no_self_review"), ephemeral=True)
         await i.response.send_modal(RejectModal(row["id"], i.message))
-    @discord.ui.button(label="Confirm Participation / تأكيد المشاركة", emoji="✋", style=discord.ButtonStyle.primary, custom_id="log:confirm_part")
+    @discord.ui.button(label="Confirm Part", emoji="✋", style=discord.ButtonStyle.primary, custom_id="log:confirm_part")
     async def confirm_part(self, i: discord.Interaction, button: discord.ui.Button):
         row = await resolve_log(i)
         if not row: return
@@ -1678,11 +1362,9 @@ class ReviewView(discord.ui.View):
                 await db.commit()
             except Exception as e:
                 await db.rollback()
-                print(f"❌ confirm DB error: {e}")
                 return await i.response.send_message(tr("db_err"), ephemeral=True)
         flags = json.loads(row["flags"] or "[]")
-        custom_tmpl = await get_custom_template(i.guild.id, row["type"])
-        guild_emojis = await get_guild_emojis(i.guild.id)
+        custom_tmpl, guild_emojis = await get_custom_template(i.guild.id, row["type"]), await get_guild_emojis(i.guild.id)
         updated = render(row["id"], row["type"], row["author_id"], data, row["result"], flags, custom_template=custom_tmpl, guild_emojis=guild_emojis)
         await i.response.send_message(tr("part_confirmed"), ephemeral=True)
         try: await i.message.edit(content=updated, allowed_mentions=discord.AllowedMentions.none())
@@ -1697,7 +1379,7 @@ class PendingPaginator(discord.ui.View):
     def get_page_text(self):
         chunk = self.items[self.page * self.per_page:(self.page + 1) * self.per_page]
         lines = [f"**#{lid}** {LOG_TYPES.get(t, {}).get('label', t)} — <@{author}> — {str(created)[:16]}{f' https://discord.com/channels/{self.guild_id}/{ch_id}/{msg_id}' if ch_id and msg_id else ''}" for lid, t, author, created, ch_id, msg_id in chunk]
-        return f"⏳ **Pending logs / اللوجات المنتظرة** — {len(self.items)} total — page {self.page + 1}/{self.max_pages()}\n\n" + "\n".join(lines)
+        return f"⏳ **Pending logs** — {len(self.items)} total — page {self.page + 1}/{self.max_pages()}\n\n" + "\n".join(lines)
     async def interaction_check(self, i: discord.Interaction) -> bool: return i.user.id == self.owner_user_id
     @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
     async def prev(self, i: discord.Interaction, button: discord.ui.Button):
@@ -1708,7 +1390,7 @@ class PendingPaginator(discord.ui.View):
         self.page = min(self.max_pages() - 1, self.page + 1)
         await i.response.edit_message(content=self.get_page_text()[:1990], view=self)
 
-@bot.tree.command(name="pending", description="List logs waiting for review / اللوجات المنتظرة")
+@bot.tree.command(name="pending", description="List logs waiting for review")
 @app_commands.checks.cooldown(1, 10.0)
 async def pending(i: discord.Interaction):
     if not await check_cmd_perm(i, "pending"): return await i.response.send_message(tr("no_role"), ephemeral=True)
@@ -1724,9 +1406,8 @@ async def pending(i: discord.Interaction):
         view = PendingPaginator(rows, i.guild.id, i.user.id)
         await i.response.send_message(view.get_page_text()[:1990], view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 # ================================================================ الإدارة المؤقتة (Temp Admin)
-@bot.tree.command(name="grant-temp-admin", description="Grant temporary admin permissions / إعطاء صلاحيات إدارية مؤقتة")
+@bot.tree.command(name="grant-temp-admin", description="Grant temporary admin permissions")
 @app_commands.checks.cooldown(1, 10.0)
-@app_commands.describe(member="Member / العضو", minutes="Duration in minutes (1-1440) / المدة بالدقائق")
 async def grant_temp_admin(i: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 1440]):
     if not is_admin(i.user) and i.user.id != owner_id():
         return await i.response.send_message(tr("no_perm"), ephemeral=True)
@@ -1738,10 +1419,8 @@ async def grant_temp_admin(i: discord.Interaction, member: discord.Member, minut
         await db.commit()
     await audit(f"👑 {i.user.mention} granted Temp Admin to {member.mention} for {minutes} minutes.", i.guild)
     await i.response.send_message(f"✅ Granted temporary admin to {member.mention} for **{minutes}** minutes.", ephemeral=True)
-    try: await member.send(f"👑 You have been granted **Temporary Admin** in **{i.guild.name}** for {minutes} minutes.")
-    except discord.HTTPException: pass
 
-@bot.tree.command(name="revoke-temp-admin", description="Revoke temporary admin permissions / سحب الصلاحيات المؤقتة")
+@bot.tree.command(name="revoke-temp-admin", description="Revoke temporary admin permissions")
 @app_commands.checks.cooldown(1, 10.0)
 async def revoke_temp_admin(i: discord.Interaction, member: discord.Member):
     if not is_admin(i.user) and i.user.id != owner_id():
@@ -1792,7 +1471,7 @@ async def check_achievements(guild, user_id, current_points):
                     except discord.HTTPException: pass
 
 # ================================================================ الإعدادات والتحكم
-@bot.tree.command(name="setchannel", description="Set channels / تحديد القنوات")
+@bot.tree.command(name="setchannel", description="Set channels")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(log_type=LOG_TYPE_CHOICES, kind=KIND_CHANNEL)
 async def setchannel(i: discord.Interaction, log_type: app_commands.Choice[str], kind: app_commands.Choice[str], channel: Optional[discord.TextChannel] = None):
@@ -1807,7 +1486,7 @@ async def setchannel(i: discord.Interaction, log_type: app_commands.Choice[str],
     await audit(f"⚙️ {i.user.mention} set {kind.value} ({t}) to {channel.mention if channel else 'none'}", i.guild)
     await i.response.send_message(f"✅ **{kind.name}** ({t}) = {channel.mention if channel else 'Cleared'}{warn}", ephemeral=True)
 
-@bot.tree.command(name="setping", description="Set ping roles / تحديد رتب المنشن")
+@bot.tree.command(name="setping", description="Set ping roles")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(log_type=LOG_TYPE_CHOICES, kind=KIND_PING)
 async def setping(i: discord.Interaction, log_type: app_commands.Choice[str], kind: app_commands.Choice[str], role: Optional[discord.Role] = None):
@@ -1816,7 +1495,7 @@ async def setping(i: discord.Interaction, log_type: app_commands.Choice[str], ki
     await audit(f"⚙️ {i.user.mention} set {kind.value} ({log_type.value}) to {role.mention if role else 'none'}", i.guild)
     await i.response.send_message(f"✅ **{kind.name}** ({log_type.name}) = {role.mention if role else 'Cleared'}", ephemeral=True)
 
-@bot.tree.command(name="setroles", description="Set role permissions / صلاحيات الرتب")
+@bot.tree.command(name="setroles", description="Set role permissions")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(kind=KIND_ROLES, log_type=LOG_TYPE_CHOICES, action=ACTIONS)
 async def setroles(i: discord.Interaction, kind: app_commands.Choice[str], log_type: app_commands.Choice[str], action: app_commands.Choice[str], role: discord.Role):
@@ -1825,7 +1504,7 @@ async def setroles(i: discord.Interaction, kind: app_commands.Choice[str], log_t
     await audit(f"⚙️ {i.user.mention} {action.value} {role.mention} → {kind.value} ({log_type.value})", i.guild)
     await i.response.send_message(f"✅ {action.name}: {role.mention} → **{kind.name}** ({log_type.name}).", ephemeral=True)
 
-@bot.tree.command(name="setrule", description="Change a server rule / تغيير قاعدة في السيرفر")
+@bot.tree.command(name="setrule", description="Change a server rule")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(rule_name=RULE_CHOICES)
 async def setrule(i: discord.Interaction, rule_name: app_commands.Choice[str], value: app_commands.Range[int, 0, 1000]):
@@ -1834,7 +1513,7 @@ async def setrule(i: discord.Interaction, rule_name: app_commands.Choice[str], v
     await audit(f"⚙️ {i.user.mention} updated rule `{rule_name.value}` to `{value}`", i.guild)
     await i.response.send_message(f"✅ **{rule_name.value}** = {value}", ephemeral=True)
 
-@bot.tree.command(name="settings", description="Show server settings / عرض الإعدادات والقواعد")
+@bot.tree.command(name="settings", description="Show server settings")
 @app_commands.checks.cooldown(1, 5.0)
 async def settings_cmd(i: discord.Interaction):
     if not await gate(i, "settings", editor=True): return
@@ -1842,21 +1521,20 @@ async def settings_cmd(i: discord.Interaction):
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT cmd_name, role_id FROM cmd_roles WHERE guild_id=?", (g,))
         cmd_rows = await cur.fetchall()
-    embed = discord.Embed(title=f"⚙️ Server Settings / إعدادات السيرفر — {BOT_VERSION}", color=discord.Color.blue(), timestamp=now_utc())
+    embed = discord.Embed(title=f"⚙️ Server Settings — {BOT_VERSION}", color=discord.Color.blue(), timestamp=now_utc())
     audit_ch = await cfg_get(g, "all", "audit_channel")
     embed.add_field(name="📍 Audit Channel", value=f"<#{audit_ch}>" if audit_ch else "Not set", inline=False)
     ch_text = ""
     for t in LOG_TYPES:
         rv, lg = await cfg_get(g, t, "review_channel"), await cfg_get(g, t, "log_channel")
         ch_text += f"**{LOG_TYPES[t]['label']}**\nReview: {f'<#{rv}>' if rv else 'Not set'} | Log: {f'<#{lg}>' if lg else 'Not set'}\n"
-    embed.add_field(name="📺 Channels / القنوات", value=ch_text[:1000] or "None", inline=False)
+    embed.add_field(name="📺 Channels", value=ch_text[:1000] or "None", inline=False)
     rule_lines = [f"• `{k}`: {await rule(g, k)}" for k in RULE_LABELS]
-    embed.add_field(name="📜 Rules / القواعد", value="\n".join(rule_lines)[:1000], inline=False)
-    if cmd_rows:
-        embed.add_field(name="🔒 Command Locks", value="\n".join(f"• `/{c}` → <@&{r}>" for c, r in cmd_rows)[:1000], inline=False)
+    embed.add_field(name="📜 Rules", value="\n".join(rule_lines)[:1000], inline=False)
+    if cmd_rows: embed.add_field(name="🔒 Command Locks", value="\n".join(f"• `/{c}` → <@&{r}>" for c, r in cmd_rows)[:1000], inline=False)
     await i.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="sync", description="Sync commands / مزامنة الأوامر")
+@bot.tree.command(name="sync", description="Sync commands")
 @app_commands.checks.cooldown(1, 30.0)
 async def sync_cmd(i: discord.Interaction):
     if not await gate(i, "sync", editor=True): return
@@ -1867,7 +1545,7 @@ async def sync_cmd(i: discord.Interaction):
 async def cmd_name_autocomplete(i: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     return [app_commands.Choice(name=c, value=c) for c in ALL_BOT_COMMANDS if current.lower() in c.lower()][:25]
 
-@bot.tree.command(name="set-cmd-perms", description="Control command permissions / التحكم في صلاحيات الأوامر")
+@bot.tree.command(name="set-cmd-perms", description="Control command permissions")
 @app_commands.autocomplete(command=cmd_name_autocomplete)
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(action=[
@@ -1877,8 +1555,7 @@ async def cmd_name_autocomplete(i: discord.Interaction, current: str) -> List[ap
 ])
 async def set_cmd_perms(i: discord.Interaction, command: str, action: app_commands.Choice[str], role: Optional[discord.Role] = None, member: Optional[discord.Member] = None):
     if not await gate(i, "set-cmd-perms", editor=True): return
-    if command not in ALL_BOT_COMMANDS:
-        return await i.response.send_message("❌ Invalid command.", ephemeral=True)
+    if command not in ALL_BOT_COMMANDS: return await i.response.send_message("❌ Invalid command.", ephemeral=True)
     async with aiosqlite.connect(DB) as db:
         if action.value == "add_role" and role:
             await db.execute("INSERT INTO cmd_roles(guild_id, cmd_name, role_id) VALUES(?,?,?) ON CONFLICT(guild_id, cmd_name) DO UPDATE SET role_id=excluded.role_id", (i.guild.id, command, role.id))
@@ -1896,14 +1573,13 @@ async def set_cmd_perms(i: discord.Interaction, command: str, action: app_comman
             await db.execute("DELETE FROM cmd_roles WHERE guild_id=? AND cmd_name=?", (i.guild.id, command))
             await db.execute("DELETE FROM cmd_users WHERE guild_id=? AND cmd_name=?", (i.guild.id, command))
             msg = f"🔓 `/{command}` is now fully open."
-        else:
-            return await i.response.send_message("❌ Provide a role or member.", ephemeral=True)
+        else: return await i.response.send_message("❌ Provide a role or member.", ephemeral=True)
         await db.commit()
     await save_config_snapshot_json()
     await audit(f"⚙️ {i.user.mention} updated permissions for `/{command}`", i.guild)
     await i.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="set-update-ping", description="Set role pinged on updates / رتبة منشن التحديثات")
+@bot.tree.command(name="set-update-ping", description="Set role pinged on updates")
 @app_commands.checks.cooldown(1, 5.0)
 async def set_update_ping(i: discord.Interaction, role: Optional[discord.Role] = None):
     if not await gate(i, "set-update-ping", editor=True): return
@@ -1911,7 +1587,7 @@ async def set_update_ping(i: discord.Interaction, role: Optional[discord.Role] =
     await audit(f"⚙️ {i.user.mention} set update ping to {role.mention if role else 'None'}", i.guild)
     await i.response.send_message(f"✅ Update ping role set to {role.mention}." if role else "🗑️ Update ping cleared.", ephemeral=True)
 
-@bot.tree.command(name="set-log-template", description="Customize a log layout / تخصيص شكل اللوج")
+@bot.tree.command(name="set-log-template", description="Customize a log layout")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(log_type=LOG_TYPE_CHOICES[1:])
 async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice[str], template: Optional[app_commands.Range[str, 1, 1200]] = None):
@@ -1923,24 +1599,13 @@ async def set_log_template(i: discord.Interaction, log_type: app_commands.Choice
         await i.response.send_message(f"✅ Template updated for **{log_type.name}**.", ephemeral=True)
     else:
         current_template = await get_custom_template(i.guild.id, log_type.value)
-        msg = (
-            f"📝 **Current Template for {log_type.name}:**\n```\n{current_template}\n```\n"
-            f"*Copy the code above, edit it, then use `/set-log-template` with your new template to save it.*\n"
-            f"*(You can use variables like `{{MOON}}`, `{{ARROW}}`, `{{CROWN}}`, `{{DIVIDER}}`, `{{author}}`, `{{score}}`, `{{result}}`, etc.)*"
-        )
+        msg = f"📝 **Current Template for {log_type.name}:**\n```\n{current_template}\n```\n*Use variables like `{{MOON}}`, `{{ARROW}}`, `{{CROWN}}`, `{{DIVIDER}}`, `{{author}}`, `{{score}}`, `{{result}}`.*"
         await i.response.send_message(msg[:1990], ephemeral=True)
 
 # ================================================================ إدارة الإيموجيات المخصصة
-EMOJI_SLOT_CHOICES = [
-    app_commands.Choice(name="👼 Angel (header)", value="angel"),
-    app_commands.Choice(name="🌙 Moon", value="moon"),
-    app_commands.Choice(name="➡️ Arrow", value="arrow"),
-    app_commands.Choice(name="👑 Crown", value="crown"),
-    app_commands.Choice(name="◀️ Divider Left", value="divider_left"),
-    app_commands.Choice(name="▶️ Divider Right", value="divider_right"),
-]
+EMOJI_SLOT_CHOICES = [app_commands.Choice(name="👼 Angel", value="angel"), app_commands.Choice(name="🌙 Moon", value="moon"), app_commands.Choice(name="➡️ Arrow", value="arrow"), app_commands.Choice(name="👑 Crown", value="crown"), app_commands.Choice(name="◀️ Divider Left", value="divider_left"), app_commands.Choice(name="▶️ Divider Right", value="divider_right")]
 
-@bot.tree.command(name="set-log-emojis", description="Set custom emojis for log messages / تحديد إيموجيات مخصصة للوجات")
+@bot.tree.command(name="set-log-emojis", description="Set custom emojis for logs")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(slot=EMOJI_SLOT_CHOICES)
 async def set_log_emojis(i: discord.Interaction, slot: app_commands.Choice[str], emoji: Optional[str] = None):
@@ -1952,28 +1617,25 @@ async def set_log_emojis(i: discord.Interaction, slot: app_commands.Choice[str],
         invalidate_emoji_cache(i.guild.id)
         return await i.response.send_message(f"🗑️ Cleared **{slot.name}**.", ephemeral=True)
     emoji = emoji.strip()
-    if len(emoji) > 150:
-        return await i.response.send_message("❌ Emoji is too long.", ephemeral=True)
+    if len(emoji) > 150: return await i.response.send_message("❌ Emoji is too long.", ephemeral=True)
     async with aiosqlite.connect(DB) as db:
         await db.execute("INSERT INTO log_emojis(guild_id, slot, emoji) VALUES(?,?,?) ON CONFLICT(guild_id, slot) DO UPDATE SET emoji=excluded.emoji", (i.guild.id, slot.value, emoji))
         await db.commit()
     invalidate_emoji_cache(i.guild.id)
     await audit(f"🎨 {i.user.mention} set log emoji `{slot.value}` to {emoji}", i.guild)
-    await i.response.send_message(f"✅ **{slot.name}** → {emoji}\n\nSaved!", ephemeral=True)
+    await i.response.send_message(f"✅ **{slot.name}** → {emoji}", ephemeral=True)
 
-@bot.tree.command(name="show-log-emojis", description="Show current log emojis / عرض الإيموجيات الحالية")
+@bot.tree.command(name="show-log-emojis", description="Show current log emojis")
 @app_commands.checks.cooldown(1, 5.0)
 async def show_log_emojis(i: discord.Interaction):
     if not await gate(i, "show-log-emojis"): return
     emojis = await get_guild_emojis(i.guild.id)
-    embed = discord.Embed(title="🎨 Current Log Emojis / الإيموجيات الحالية", description="Use `/set-log-emojis` to change any emoji.", color=discord.Color.blue())
-    slot_names = {"angel": "👼 Angel", "moon": "🌙 Moon", "arrow": "➡️ Arrow", "crown": "👑 Crown", "divider_left": "◀️ Divider Left", "divider_right": "▶️ Divider Right"}
-    for slot, name in slot_names.items():
-        val = emojis.get(slot)
-        embed.add_field(name=name, value=val if val else "— (none)", inline=True)
+    embed = discord.Embed(title="🎨 Current Log Emojis", color=discord.Color.blue())
+    slot_names = {"angel": "👼 Angel", "moon": "🌙 Moon", "arrow": "➡️ Arrow", "crown": "👑 Crown", "divider_left": "◀️ Left", "divider_right": "▶️ Right"}
+    for slot, name in slot_names.items(): embed.add_field(name=name, value=emojis.get(slot, "— (none)"), inline=True)
     await i.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="reset-log-emojis", description="Reset all log emojis / مسح كل الإيموجيات")
+@bot.tree.command(name="reset-log-emojis", description="Reset all log emojis")
 @app_commands.checks.cooldown(1, 10.0)
 async def reset_log_emojis(i: discord.Interaction):
     if not await gate(i, "reset-log-emojis", editor=True): return
@@ -1985,7 +1647,7 @@ async def reset_log_emojis(i: discord.Interaction):
     await i.response.send_message("🗑️ All custom log emojis cleared.", ephemeral=True)
 
 # ================================================================ النقط والترتيب
-@bot.tree.command(name="set-log-points", description="Set log points / تحديد نقاط اللوجات")
+@bot.tree.command(name="set-log-points", description="Set log points")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(log=POINT_CHOICES)
 async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], points: app_commands.Range[int, 0, 1000]):
@@ -1994,7 +1656,7 @@ async def set_log_points(i: discord.Interaction, log: app_commands.Choice[str], 
     await audit(f"⚙️ {i.user.mention} set log points for **{log.name}** to **{points}**", i.guild)
     await i.response.send_message(f"✅ **{log.name}** = {points} points (new logs only).", ephemeral=True)
 
-@bot.tree.command(name="set-rank-points", description="Set rank threshold / نقاط رتب السلم")
+@bot.tree.command(name="set-rank-points", description="Set rank threshold")
 @app_commands.checks.cooldown(1, 5.0)
 @app_commands.choices(rank=RANK_CHOICES)
 async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str], points: app_commands.Range[int, 0, 100000]):
@@ -2011,7 +1673,7 @@ async def set_rank_points(i: discord.Interaction, rank: app_commands.Choice[str]
     await audit(f"⚙️ {i.user.mention} set rank **{rank.name}** to **{points}** ({changed} promotions)", i.guild)
     await i.followup.send(f"✅ **{rank.name}** = {points} points. Promotions applied: {changed}.", ephemeral=True)
 
-@bot.tree.command(name="set-points", description="Set member points / تحديد نقاط عضو")
+@bot.tree.command(name="set-points", description="Set member points")
 @app_commands.checks.cooldown(1, 5.0)
 async def set_points(i: discord.Interaction, member: discord.Member, points: app_commands.Range[int, 0, 100000]):
     if not await gate(i, "set-points", editor=True): return
@@ -2024,18 +1686,14 @@ async def set_points(i: discord.Interaction, member: discord.Member, points: app
             row = await cur.fetchone()
             delta = points - (row[0] if row else 0)
             await db.execute("INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET points=excluded.points", (i.guild.id, member.id, points))
-            if delta != 0:
-                await db.execute("INSERT INTO point_events(guild_id, log_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?,?)", (i.guild.id, None, member.id, delta, now_utc().isoformat(), "manual", season))
+            if delta != 0: await db.execute("INSERT INTO point_events(guild_id, log_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?,?)", (i.guild.id, None, member.id, delta, now_utc().isoformat(), "manual", season))
             await db.commit()
         except Exception as e:
             await db.rollback()
-            print(f"❌ set-points DB error: {e}")
             return await i.followup.send(tr("db_err"), ephemeral=True)
     await update_member_rank(i.guild, member, points)
     await audit(f"⚙️ {i.user.mention} set points of {member.mention} to **{points}** (Δ {delta:+d})", i.guild)
-    note = ""
-    if await rank_is_above_points(i.guild, member, points):
-        note = "\n⚠️ Member holds a rank above their points. Use `/sync-ranks demote:True`."
+    note = "\n⚠️ Member holds a rank above their points. Use `/sync-ranks demote:True`." if await rank_is_above_points(i.guild, member, points) else ""
     await i.followup.send(f"✅ {member.display_name} = {points} points.{note}", ephemeral=True)
 
 async def ledger_mismatches(guild_id: int):
@@ -2047,29 +1705,24 @@ async def ledger_mismatches(guild_id: int):
         cached = {u: p for u, p in await cur.fetchall()}
     return [(u, cached.get(u, 0), ledger.get(u, 0)) for u in sorted(set(ledger) | set(cached)) if cached.get(u, 0) != ledger.get(u, 0)]
 
-@bot.tree.command(name="verify-points", description="Check balances against ledger / فحص الرصيد مقابل السجل")
+@bot.tree.command(name="verify-points", description="Check balances against ledger")
 @app_commands.checks.cooldown(1, 30.0)
-@app_commands.describe(fix="Overwrite balances with ledger totals", confirm="Type FIX to confirm > 5 repairs")
 async def verify_points(i: discord.Interaction, fix: bool = False, confirm: Optional[str] = None):
     if not await gate(i, "verify-points", editor=True): return
     await i.response.defer(ephemeral=True)
     bad = await ledger_mismatches(i.guild.id)
-    if not bad:
-        return await i.followup.send("✅ All balances match the points ledger.", ephemeral=True)
+    if not bad: return await i.followup.send("✅ All balances match the points ledger.", ephemeral=True)
     if fix:
-        if len(bad) > 5 and confirm != "FIX":
-            return await i.followup.send(f"⚠️ Found **{len(bad)}** mismatches. Add `confirm:FIX` to repair.", ephemeral=True)
+        if len(bad) > 5 and confirm != "FIX": return await i.followup.send(f"⚠️ Found **{len(bad)}** mismatches. Add `confirm:FIX` to repair.", ephemeral=True)
         async with aiosqlite.connect(DB) as db:
-            for uid, _, led in bad:
-                await db.execute("INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET points=excluded.points", (i.guild.id, uid, led))
+            for uid, _, led in bad: await db.execute("INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET points=excluded.points", (i.guild.id, uid, led))
             await db.commit()
         await audit(f"🛠️ {i.user.mention} repaired {len(bad)} balances from the ledger", i.guild)
     lines = [f"<@{u}>: cached {c} / ledger {l}" for u, c, l in bad[:15]]
     await i.followup.send(f"{'🛠️ Fixed' if fix else '⚠️ Found'} {len(bad)} mismatch(es):\n" + "\n".join(lines), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
-@bot.tree.command(name="sync-ranks", description="Re-check ranks from points / إعادة فحص الرتب حسب النقاط")
+@bot.tree.command(name="sync-ranks", description="Re-check ranks from points")
 @app_commands.checks.cooldown(1, 60.0)
-@app_commands.describe(member="One member (empty = everyone)", demote="Also REMOVE ranks above points")
 async def sync_ranks(i: discord.Interaction, member: Optional[discord.Member] = None, demote: bool = False):
     if not await gate(i, "sync-ranks", editor=True): return
     await i.response.defer(ephemeral=True)
@@ -2078,19 +1731,16 @@ async def sync_ranks(i: discord.Interaction, member: Optional[discord.Member] = 
             cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, member.id))
             row = await cur.fetchone()
         changed = 1 if await update_member_rank(i.guild, member, row[0] if row else 0, demote) else 0
-    else:
-        changed = await bulk_update_ranks(i.guild, allow_demote=demote)
+    else: changed = await bulk_update_ranks(i.guild, allow_demote=demote)
     await audit(f"⚙️ {i.user.mention} ran sync-ranks (demote={demote}), changes: {changed}", i.guild)
     await i.followup.send(f"✅ Done. Rank changes: {changed}.", ephemeral=True)
 
 # ================================================================ المواسم والنسخ الاحتياطي
-@bot.tree.command(name="season-reset", description="Archive points & start new season / بدء موسم جديد")
+@bot.tree.command(name="season-reset", description="Archive points & start new season")
 @app_commands.checks.cooldown(1, 60.0)
-@app_commands.describe(name="Season name", confirm="Type RESET", reset_ranks="Also remove all Lvl roles")
 async def season_reset(i: discord.Interaction, name: app_commands.Range[str, 1, 50], confirm: str, reset_ranks: bool = False):
     if not await gate(i, "season-reset", editor=True): return
-    if confirm != "RESET":
-        return await i.response.send_message("❌ Type RESET to proceed.", ephemeral=True)
+    if confirm != "RESET": return await i.response.send_message("❌ Type RESET to proceed.", ephemeral=True)
     await i.response.defer(ephemeral=True)
     name = name.strip()
     new_season_id = f"season_{uuid.uuid4().hex[:6]}"
@@ -2108,7 +1758,6 @@ async def season_reset(i: discord.Interaction, name: app_commands.Range[str, 1, 
             await db.commit()
         except Exception as e:
             await db.rollback()
-            print(f"❌ season reset DB error: {e}")
             return await i.followup.send(tr("db_err"), ephemeral=True)
     stripped = 0
     if reset_ranks:
@@ -2125,15 +1774,14 @@ async def season_reset(i: discord.Interaction, name: app_commands.Range[str, 1, 
     await audit(f"🎉 {i.user.mention} started season **{name}** (`{new_season_id}`).", i.guild)
     await i.followup.send(f"✅ Season **{name}** started. Points archived and reset." + (f" Ranks removed from {stripped} members." if reset_ranks else ""), ephemeral=True)
 
-@bot.tree.command(name="season-top", description="Top 10 of an archived season / متصدري موسم سابق")
+@bot.tree.command(name="season-top", description="Top 10 of an archived season")
 @app_commands.checks.cooldown(1, 10.0)
 async def season_top(i: discord.Interaction, name: app_commands.Range[str, 1, 50]):
     if not await gate(i, "season-top"): return
     async with aiosqlite.connect(DB) as db:
         cur = await db.execute("SELECT user_id, points FROM season_archive WHERE season=? AND guild_id=? ORDER BY points DESC LIMIT 10", (name.strip(), i.guild.id))
         rows = await cur.fetchall()
-    if not rows:
-        return await i.response.send_message("ℹ️ Season archive not found.", ephemeral=True)
+    if not rows: return await i.response.send_message("ℹ️ Season archive not found.", ephemeral=True)
     text = f"🏆 **Archived Season: {name}**\n" + "\n".join(f"**{n}.** <@{u}> — {p}" for n, (u, p) in enumerate(rows, 1))
     await i.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
 
@@ -2145,16 +1793,14 @@ def _backup_file(path):
         dst.close()
         src.close()
 
-@bot.tree.command(name="backup", description="Secure backup tool / أداة النسخ الاحتياطي الآمنة")
+@bot.tree.command(name="backup", description="Secure backup tool")
 @app_commands.checks.cooldown(1, 60.0)
 @app_commands.choices(scope=BACKUP_SCOPE_CHOICES, destination=BACKUP_DEST_CHOICES)
 async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], destination: app_commands.Choice[str]):
     if not await gate(i, "backup", editor=True): return
     if scope.value == "full":
-        if not owner_id() or i.user.id != owner_id():
-            return await i.response.send_message("❌ Full database backups are for the bot owner only.", ephemeral=True)
-        if destination.value != "owner":
-            return await i.response.send_message("❌ Full database backups can only be sent to the owner's DM.", ephemeral=True)
+        if not owner_id() or i.user.id != owner_id(): return await i.response.send_message("❌ Full DB backups are for owner only.", ephemeral=True)
+        if destination.value != "owner": return await i.response.send_message("❌ Full DB backups can only be sent to owner DM.", ephemeral=True)
     await i.response.defer(ephemeral=True)
     path = None
     try:
@@ -2190,254 +1836,47 @@ async def backup_cmd(i: discord.Interaction, scope: app_commands.Choice[str], de
         if path and os.path.exists(path):
             try: os.unlink(path)
             except OSError: pass
+# ================================================================ AI Context & Core Logic
+class AIContext:
+    def __init__(self, guild, user, can_use_tools, channel=None):
+        self.guild = guild
+        self.user = user
+        self.can_use_tools = can_use_tools
+        self.channel = channel
 
-CFG_KEYS = {"review_channel", "log_channel", "audit_channel", "review_ping", "log_ping", "update_ping", "update_channel"}
-SETTING_PREFIXES = ("points:", "rank:", "rule:", "template:")
-
-def _is_int(v):
-    return isinstance(v, int) and not isinstance(v, bool)
-
-async def restore_settings_json(guild_id: int, raw: bytes) -> dict:
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        raise ValueError("Not a valid JSON file.")
-    if not isinstance(data, dict):
-        raise ValueError("Unexpected file structure.")
-    valid_types = set(LOG_TYPES) | {"all"}
-    counts = {"settings": 0, "guild_cfg": 0, "role_perms": 0, "cmd_roles": 0, "skipped": 0}
-    def mine(r): return isinstance(r, dict) and r.get("guild_id") == guild_id
+async def _ai_can_sensitive(ctx):
+    if is_admin(ctx.user): return True
     async with aiosqlite.connect(DB) as db:
-        await db.execute("BEGIN IMMEDIATE")
-        try:
-            for r in data.get("settings", []):
-                k, v = (r.get("key"), r.get("value")) if isinstance(r, dict) else (None, None)
-                if mine(r) and isinstance(k, str) and k.startswith(SETTING_PREFIXES) and len(k) <= 100 and v is not None and len(str(v)) <= 2000:
-                    await db.execute("INSERT INTO settings(guild_id,key,value) VALUES(?,?,?) ON CONFLICT(guild_id,key) DO UPDATE SET value=excluded.value", (guild_id, k, str(v)))
-                    counts["settings"] += 1
-                else: counts["skipped"] += 1
-            for r in data.get("guild_cfg", []):
-                if mine(r) and r.get("log_type") in valid_types and r.get("key") in CFG_KEYS and _is_int(r.get("value")):
-                    await db.execute("INSERT INTO guild_cfg VALUES(?,?,?,?) ON CONFLICT(guild_id,log_type,key) DO UPDATE SET value=excluded.value", (guild_id, r["log_type"], r["key"], r["value"]))
-                    counts["guild_cfg"] += 1
-                else: counts["skipped"] += 1
-            for r in data.get("role_perms", []):
-                if mine(r) and r.get("log_type") in valid_types and r.get("kind") in ("review", "submit") and _is_int(r.get("role_id")):
-                    await db.execute("INSERT OR IGNORE INTO role_perms VALUES(?,?,?,?)", (guild_id, r["log_type"], r["kind"], r["role_id"]))
-                    counts["role_perms"] += 1
-                else: counts["skipped"] += 1
-            for r in data.get("cmd_roles", []):
-                if mine(r) and r.get("cmd_name") in ALL_BOT_COMMANDS and _is_int(r.get("role_id")):
-                    await db.execute("INSERT INTO cmd_roles VALUES(?,?,?) ON CONFLICT(guild_id,cmd_name) DO UPDATE SET role_id=excluded.role_id", (guild_id, r["cmd_name"], r["role_id"]))
-                    counts["cmd_roles"] += 1
-                else: counts["skipped"] += 1
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            raise
-    await save_config_snapshot_json()
-    return counts
-
-def _validate_sqlite(path):
-    con = sqlite3.connect(path)
-    try:
-        ok = con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    except sqlite3.DatabaseError: return False
-    finally: con.close()
-    required = {"settings", "members", "logs", "hashes", "guild_cfg", "role_perms", "point_events", "cmd_roles", "cmd_users", "crews", "tickets", "shop_items", "achievements", "quests", "events"}
-    return ok and required.issubset(tables)
-
-def _restore_into_live(src_path):
-    src = sqlite3.connect(src_path)
-    dst = sqlite3.connect(DB)
-    try: src.backup(dst)
-    finally:
-        dst.close()
-        src.close()
-
-async def restore_database(raw: bytes):
-    tmp = os.path.join(tempfile.gettempdir(), f"restore-{uuid.uuid4().hex[:8]}.db")
-    safety = os.path.join(tempfile.gettempdir(), f"pre-restore-{uuid.uuid4().hex[:8]}.db")
-    try:
-        with open(tmp, "wb") as f: f.write(raw)
-        if not await asyncio.to_thread(_validate_sqlite, tmp):
-            raise ValueError("The file is not a valid DragonSlayerBot database.")
-        await asyncio.to_thread(_backup_file, safety)
-        try:
-            if not await asyncio.to_thread(_validate_sqlite, safety):
-                raise RuntimeError("Could not create a valid pre-restore safety backup.")
-            await asyncio.to_thread(_restore_into_live, tmp)
-            await init_db()
-            return True
-        except Exception:
-            if os.path.exists(safety) and await asyncio.to_thread(_validate_sqlite, safety):
-                await asyncio.to_thread(_restore_into_live, safety)
-                await init_db()
-            raise
-    finally:
-        for path in (tmp, safety):
-            if os.path.exists(path): os.unlink(path)
-
-@bot.tree.command(name="restore-backup", description="Restore settings (.json) or database (.db) / استعادة نسخة احتياطية")
-@app_commands.checks.cooldown(1, 60.0)
-async def restore_backup(i: discord.Interaction, backup_file: discord.Attachment, confirm: Optional[str] = None):
-    if not await gate(i, "restore-backup", editor=True): return
-    ext = os.path.splitext(backup_file.filename)[1].lower()
-    if ext not in (".json", ".db"):
-        return await i.response.send_message("❌ Only `.json` or `.db` files are accepted.", ephemeral=True)
-    if ext == ".db":
-        if not owner_id() or i.user.id != owner_id():
-            return await i.response.send_message("❌ Restoring a database file is for the bot owner only.", ephemeral=True)
-        if confirm != "RESTORE":
-            return await i.response.send_message("⚠️ This REPLACES all data. Type `RESTORE` in `confirm`.", ephemeral=True)
-    if backup_file.size > (2 * 1024 * 1024 if ext == ".json" else MAX_FILE_SIZE):
-        return await i.response.send_message("❌ File is too large.", ephemeral=True)
-    await i.response.defer(ephemeral=True)
-    raw = await backup_file.read()
-    try:
-        if ext == ".json":
-            c = await restore_settings_json(i.guild.id, raw)
-            await audit(f"📥 {i.user.mention} restored settings from a JSON backup ({c}).", i.guild)
-            await i.followup.send(f"✅ Settings restored: {c['settings']} settings, {c['guild_cfg']} channels, {c['role_perms']} role perms, {c['cmd_roles']} cmd locks.", ephemeral=True)
-        else:
-            await restore_database(raw)
-            await audit(f"📥 {i.user.mention} restored the full database.", i.guild)
-            await i.followup.send("✅ Database restored and migrated.", ephemeral=True)
-    except ValueError as e: await i.followup.send(f"❌ {e}", ephemeral=True)
-    except Exception as e:
-        print(f"❌ Restore error: {e}")
-        await i.followup.send("❌ Restore failed.", ephemeral=True)
-
-# ================================================================ التحديثات (Updates)
-async def post_update_notice(guild, target, preset_key="bot_patch", replace_previous=True):
-    data = UPDATE_PRESETS[preset_key]
-    ping_role_id = await cfg_get(guild.id, "all", "update_ping")
-    embed = discord.Embed(title=f"📢 {data['title_en']} | {data['title_ar']}", color=discord.Color.gold(), timestamp=now_utc())
-    embed.add_field(name="🇬🇧 English", value=data["desc_en"][:1000], inline=False)
-    embed.add_field(name="🇸🇦 بالعربي", value=data["desc_ar"][:1000], inline=False)
-    embed.set_footer(text=f"DragonSlayerBot {BOT_VERSION}")
-    sent = await target.send(content=f"<@&{ping_role_id}>" if ping_role_id else None, embed=embed, allowed_mentions=mentions(ping_role_id))
-    key = f"state:last_update:{target.id}"
-    prev = await raw_setting(guild.id, key)
-    await set_setting(guild.id, key, sent.id)
-    if replace_previous and prev:
-        try:
-            old = await target.fetch_message(int(prev))
-            if old.author.id == getattr(bot.user, "id", None): await old.delete()
-        except (discord.HTTPException, ValueError, AttributeError): pass
-    return sent
-
-async def check_and_notify_auto_update(guild: discord.Guild):
-    if await raw_setting(guild.id, "state:bot_version") == BOT_VERSION: return
-    ch_id = (await cfg_get(guild.id, "all", "update_channel") or await cfg_get(guild.id, "all", "log_channel"))
-    ch = guild.get_channel(ch_id) if ch_id else None
-    if not ch: return
-    try:
-        await post_update_notice(guild, ch)
-        await set_setting(guild.id, "state:bot_version", BOT_VERSION)
-    except discord.HTTPException: pass
-
-@bot.tree.command(name="log-update", description="Publish an update notice / نشر إشعار تحديث")
-@app_commands.checks.cooldown(1, 10.0)
-@app_commands.choices(preset=UPDATE_TYPE_CHOICES)
-async def log_update(i: discord.Interaction, preset: app_commands.Choice[str], channel: Optional[discord.TextChannel] = None, replace_previous: bool = True):
-    if not await gate(i, "log-update", editor=True): return
-    target = channel
-    if not target:
-        ch_id = await cfg_get(i.guild.id, "all", "update_channel") or await cfg_get(i.guild.id, "all", "log_channel")
-        target = i.guild.get_channel(ch_id) if ch_id else None
-    if preset.value not in UPDATE_PRESETS or not target:
-        return await i.response.send_message("❌ Set an update channel first with `/setchannel`.", ephemeral=True)
-    await i.response.defer(ephemeral=True)
-    try:
-        await post_update_notice(i.guild, target, preset.value, replace_previous)
-        await audit(f"📢 {i.user.mention} posted update **{preset.name}** in {target.mention}", i.guild)
-        await i.followup.send(f"✅ Update published to {target.mention}.", ephemeral=True)
-    except discord.HTTPException as e:
-        await i.followup.send(f"❌ Failed to send the update: {e}", ephemeral=True)
-
-# ================================================================ AI Assistant (Logic + Commands)
-_ai_sessions = {}
-
-async def _ai_get_setting(gid, key, default=None):
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT value FROM ai_settings WHERE guild_id=? AND key=?", (gid, key))
-        row = await cur.fetchone()
-    return row[0] if row else default
-
-async def _ai_set_setting(gid, key, value):
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO ai_settings(guild_id,key,value) VALUES(?,?,?) ON CONFLICT(guild_id,key) DO UPDATE SET value=excluded.value", (gid, key, str(value)))
-        await db.commit()
-
-async def _ai_can_chat(i):
-    default = await _ai_get_setting(i.guild_id, "chat_default", "1")
-    async with aiosqlite.connect(DB) as db:
-        if default == "1":
-            cur = await db.execute("SELECT 1 FROM ai_deny WHERE guild_id=? AND user_id=?", (i.guild_id, i.user.id))
-            return not await cur.fetchone()
-        cur = await db.execute("SELECT 1 FROM ai_allow WHERE guild_id=? AND user_id=?", (i.guild_id, i.user.id))
-        return bool(await cur.fetchone()) or is_admin(i.user)
-
-async def _ai_can_sensitive(i):
-    if is_admin(i.user): return True
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT 1 FROM ai_admin_users WHERE guild_id=? AND user_id=?", (i.guild_id, i.user.id))
+        cur = await db.execute("SELECT 1 FROM ai_admin_users WHERE guild_id=? AND user_id=?", (ctx.guild.id, ctx.user.id))
         return bool(await cur.fetchone())
 
-async def _ai_call(messages):
-    if not AI_API_KEY: return {"error": "AI_API_KEY missing in Railway Variables."}
-    if AI_PROVIDER not in _PROVIDERS: return {"error": f"Unknown AI_PROVIDER. Use: {', '.join(_PROVIDERS)}"}
-    url, model = _PROVIDERS[AI_PROVIDER]
-    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "tools": TOOLS, "tool_choice": "auto", "temperature": 0.6, "max_tokens": 800}
+async def _web_search(query: str) -> str:
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as s:
-            async with s.post(url, headers=headers, json=payload) as r:
-                if r.status != 200: return {"error": f"HTTP {r.status}: {(await r.text())[:300]}"}
-                data = await r.json()
-                return {"message": data["choices"][0]["message"]}
-    except asyncio.TimeoutError: return {"error": "Timeout — try again."}
-    except Exception as e: return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers) as r:
+                if r.status != 200: return f"❌ Search failed (HTTP {r.status})."
+                html = await r.text()
+                import re as _re
+                results = _re.findall(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>', html)
+                snippets = _re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', html)
+                out = []
+                for i, (link, title) in enumerate(results[:4]):
+                    title = _re.sub(r'<.*?>', '', title)
+                    snippet = _re.sub(r'<.*?>', '', snippets[i]) if i < len(snippets) else ""
+                    out.append(f"[{title}]({link})\n{snippet}")
+                return "\n\n".join(out) if out else "No results found."
+    except Exception as e:
+        return f"❌ Search error: {e}"
 
-def _find_member(g, q):
-    q = str(q).strip().lstrip("<@!").rstrip(">")
-    if q.isdigit(): return g.get_member(int(q))
-    for m in g.members:
-        if m.name.lower() == q.lower() or m.display_name.lower() == q.lower(): return m
-    for m in g.members:
-        if q.lower() in m.name.lower() or q.lower() in m.display_name.lower(): return m
-    return None
-
-def _find_role(g, q):
-    q = str(q).strip().lstrip("<@&").rstrip(">")
-    if q.isdigit(): return g.get_role(int(q))
-    for r in g.roles:
-        if r.name.lower() == q.lower(): return r
-    for r in g.roles:
-        if q.lower() in r.name.lower(): return r
-    return None
-
-def _find_channel(g, q):
-    q = str(q).strip().lstrip("<#").rstrip(">")
-    if q.isdigit(): return g.get_channel(int(q))
-    for c in g.channels:
-        if c.name.lower() == q.lower(): return c
-    for c in g.channels:
-        if q.lower() in c.name.lower(): return c
-    return None
-
-def _hex_color(hx):
-    if not hx: return discord.Color.default()
-    try: return discord.Color(int(str(hx).lstrip("#"), 16))
-    except Exception: return discord.Color.default()
-
-async def _exec_ai_tool(i, name, args):
-    if TOOL_META.get(name, {}).get("requires_admin") and not await _ai_can_sensitive(i):
+async def _exec_ai_tool(ctx, name, args):
+    if not ctx.can_use_tools: return "❌ عذراً، ليس لديك الرتبة المطلوبة لتوجيه أوامر إدارية للبوت. يمكنك الدردشة فقط."
+    if TOOL_META.get(name, {}).get("requires_admin") and not await _ai_can_sensitive(ctx):
         return "❌ DENIED: You are not authorized for sensitive commands."
-    g = i.guild
+    g = ctx.guild
     try:
+        if name == "search_web": return await _web_search(args.get("query", ""))
         if name == "get_member_info":
             m = _find_member(g, args.get("member_query", ""))
             if not m: return "❌ Member not found."
@@ -2447,16 +1886,11 @@ async def _exec_ai_tool(i, name, args):
                 pr = await cur.fetchone()
                 cur = await db.execute("SELECT current_streak,max_streak FROM streaks WHERE guild_id=? AND user_id=?", (g.id, m.id))
                 sr = await cur.fetchone()
-                cur = await db.execute("SELECT l.type,COUNT(*) FROM point_events e JOIN logs l ON l.id=e.log_id WHERE e.guild_id=? AND e.user_id=? AND e.type='log' AND l.status='accepted' GROUP BY l.type", (g.id, m.id))
-                lr = await cur.fetchall()
             pts = pr[0] if pr else 0
             st = f"{sr[0]}d (max {sr[1]}d)" if sr else "0d"
-            total = sum(r[1] for r in lr) if lr else 0
-            bd = ", ".join(f"{r[0]}:{r[1]}" for r in lr) or "no logs"
             rank = next((r.name for r in ladder_roles(g) if r and r in m.roles), "—")
-            return f"👤 **{m.display_name}** (`{m.id}`)\n• Points: **{pts}** (season {season})\n• Rank: {rank}\n• Streak: {st}\n• Logs: {total} ({bd})\n• Joined: {m.joined_at.strftime('%Y-%m-%d') if m.joined_at else '?'}\n• Top role: {m.top_role.name}"
-        if name == "get_server_info":
-            return f"📊 **{g.name}**\n• Members: {g.member_count}\n• Roles: {len(g.roles)}\n• Channels: {len(g.channels)} (text {len(g.text_channels)} / voice {len(g.voice_channels)})\n• Boost L{g.premium_tier} ({g.premium_subscription_count})\n• Owner: <@{g.owner_id}>"
+            return f"👤 **{m.display_name}** (`{m.id}`)\n• Points: **{pts}**\n• Rank: {rank}\n• Streak: {st}"
+        if name == "get_server_info": return f"📊 **{g.name}**\n• Members: {g.member_count}\n• Roles: {len(g.roles)}\n• Channels: {len(g.channels)}"
         if name == "list_channels":
             cats, no_cat = {}, []
             for c in g.channels:
@@ -2471,18 +1905,14 @@ async def _exec_ai_tool(i, name, args):
             return "\n\n".join(parts)[:1900] or "No channels."
         if name == "list_roles":
             rs = sorted([r for r in g.roles if not r.is_default()], key=lambda x: -x.position)[:30]
-            return "\n".join(f"• **{r.name}** — {len(r.members)} members — {r.color}" for r in rs) or "No roles."
-        if name == "get_channel_info":
-            c = _find_channel(g, args.get("channel_query", ""))
-            if not c: return "❌ Channel not found."
-            return f"📺 **#{c.name}**\n• Type: {type(c).__name__}\n• Category: {c.category.name if c.category else 'none'}\n• Overwrites: {len(c.overwrites)}"
+            return "\n".join(f"• **{r.name}** — {len(r.members)} members" for r in rs) or "No roles."
         if name == "create_role":
-            r = await g.create_role(name=args["name"], color=_hex_color(args.get("color_hex")), hoist=bool(args.get("hoist")), reason=f"AI by {i.user}")
+            r = await g.create_role(name=args["name"], color=_hex_color(args.get("color_hex")), reason=f"AI by {ctx.user}")
             return f"✅ Created role **{r.mention}**"
         if name == "edit_role":
             r = _find_role(g, args.get("role_query", ""))
             if not r: return "❌ Role not found."
-            kw = {"reason": f"AI by {i.user}"}
+            kw = {"reason": f"AI by {ctx.user}"}
             if args.get("new_name"): kw["name"] = args["new_name"]
             if args.get("new_color_hex"): kw["color"] = _hex_color(args["new_color_hex"])
             await r.edit(**kw)
@@ -2492,55 +1922,54 @@ async def _exec_ai_tool(i, name, args):
             if not r: return "❌ Role not found."
             if r.is_default() or r.managed or r.position >= g.me.top_role.position: return "❌ Cannot delete."
             n = r.name
-            await r.delete(reason=f"AI by {i.user}")
+            await r.delete(reason=f"AI by {ctx.user}")
             return f"✅ Deleted role **{n}**"
         if name == "create_channel":
             ct = args.get("channel_type", "text")
-            cat = None
-            if args.get("category_query"):
-                c = _find_channel(g, args["category_query"])
-                if isinstance(c, discord.CategoryChannel): cat = c
-            ow = {}
-            if args.get("is_private"):
-                ow[g.default_role] = discord.PermissionOverwrite(read_messages=False)
-                for rq in args.get("allowed_roles", []) or []:
-                    rr = _find_role(g, rq)
-                    if rr: ow[rr] = discord.PermissionOverwrite(read_messages=True)
-                ow[g.me] = discord.PermissionOverwrite(read_messages=True)
-            kw = {"name": args["name"], "category": cat, "overwrites": ow, "reason": f"AI by {i.user}"}
+            cat = _find_channel(g, args.get("category_query", "")) if args.get("category_query") else None
+            kw = {"name": args["name"], "category": cat, "reason": f"AI by {ctx.user}"}
             ch = await (g.create_voice_channel(**kw) if ct == "voice" else g.create_text_channel(**kw))
             return f"✅ Created {ct} channel {ch.mention}"
         if name == "delete_channel":
             c = _find_channel(g, args.get("channel_query", ""))
             if not c: return "❌ Channel not found."
             n = c.name
-            await c.delete(reason=f"AI by {i.user}")
+            await c.delete(reason=f"AI by {ctx.user}")
             return f"✅ Deleted channel **{n}**"
         if name == "give_role":
             m = _find_member(g, args.get("member_query", ""))
             r = _find_role(g, args.get("role_query", ""))
             if not m or not r: return "❌ Member or role not found."
-            await m.add_roles(r, reason=f"AI by {i.user}")
+            await m.add_roles(r, reason=f"AI by {ctx.user}")
             return f"✅ Gave **{r.name}** to **{m.display_name}**"
         if name == "remove_role":
             m = _find_member(g, args.get("member_query", ""))
             r = _find_role(g, args.get("role_query", ""))
             if not m or not r: return "❌ Member or role not found."
-            await m.remove_roles(r, reason=f"AI by {i.user}")
+            await m.remove_roles(r, reason=f"AI by {ctx.user}")
             return f"✅ Removed **{r.name}** from **{m.display_name}**"
-        if name == "bulk_give_role":
-            src = _find_role(g, args.get("source_role_query", ""))
-            tgt = _find_role(g, args.get("target_role_query", ""))
-            if not src or not tgt: return "❌ Source or target role not found."
-            cnt = 0
-            for m in src.members:
-                if m.bot: continue
-                try:
-                    await m.add_roles(tgt, reason=f"AI bulk by {i.user}")
-                    cnt += 1
-                    await asyncio.sleep(0.3)
-                except Exception: pass
-            return f"✅ Gave **{tgt.name}** to {cnt} members with **{src.name}**"
+        if name == "timeout_member":
+            m = _find_member(g, args.get("member_query", ""))
+            if not m: return "❌ Member not found."
+            mins = int(args.get("duration_minutes", 10))
+            try:
+                await m.timeout(timedelta(minutes=mins), reason=args.get("reason", "AI Timeout"))
+                return f"✅ Muted **{m.display_name}** for {mins} minutes."
+            except discord.Forbidden: return "❌ Cannot timeout (bot role too low)."
+        if name == "kick_member":
+            m = _find_member(g, args.get("member_query", ""))
+            if not m: return "❌ Member not found."
+            try:
+                await m.kick(reason=args.get("reason", "AI Kick"))
+                return f"✅ Kicked **{m.display_name}**."
+            except discord.Forbidden: return "❌ Cannot kick (bot role too low)."
+        if name == "purge_messages":
+            amount = int(args.get("amount", 10))
+            if not ctx.channel: return "❌ Cannot purge here."
+            try:
+                await ctx.channel.purge(limit=min(amount, 100))
+                return f"✅ Deleted {amount} messages."
+            except discord.Forbidden: return "❌ Missing Manage Messages permission."
         if name == "send_channel_message":
             c = _find_channel(g, args.get("channel_query", ""))
             if not isinstance(c, discord.TextChannel): return "❌ Text channel not found."
@@ -2550,185 +1979,495 @@ async def _exec_ai_tool(i, name, args):
     except discord.Forbidden: return "❌ Forbidden: missing Discord permission."
     except Exception as e: return f"❌ {type(e).__name__}: {str(e)[:200]}"
 
-async def _run_ai(i, text):
-    key = (i.guild_id, i.user.id)
+async def _ai_call(messages, image_url=None, is_vision=False):
+    if not AI_API_KEY: return {"error": "AI_API_KEY missing."}
+    prov_key = "groq_vision" if is_vision else AI_PROVIDER
+    if prov_key not in _PROVIDERS: return {"error": f"Unknown provider: {prov_key}"}
+    url, model = _PROVIDERS[prov_key]
+    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    
+    if is_vision and image_url:
+        last_msg = messages[-1]
+        messages[-1] = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": last_msg["content"]},
+                {"type": "image_url", "image_url": {"url": image_url}}
+            ]
+        }
+    
+    payload = {"model": model, "messages": messages, "tools": TOOLS if not is_vision else [], "tool_choice": "auto" if not is_vision else "none", "temperature": 0.6, "max_tokens": 800}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as s:
+            async with s.post(url, headers=headers, json=payload) as r:
+                if r.status != 200: return {"error": f"HTTP {r.status}: {(await r.text())[:300]}"}
+                data = await r.json()
+                return {"message": data["choices"][0]["message"]}
+    except asyncio.TimeoutError: return {"error": "Timeout — try again."}
+    except Exception as e: return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+async def _run_ai(ctx, text, image_url=None):
+    key = (ctx.guild.id, ctx.user.id)
     lang = detect_language(text)
-    cached = _ai_sessions.get(key)
-    if not cached or cached.get("lang") != lang:
-        cached = {"lang": lang, "history": [{"role": "system", "content": _build_system_prompt(lang)}]}
-    hist = cached["history"]
-    hist.append({"role": "user", "content": text})
-    if len(hist) > 20: hist = [hist[0]] + hist[-18:]
+    
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT history FROM ai_memory WHERE guild_id=? AND user_id=?", (ctx.guild.id, ctx.user.id))
+        row = await cur.fetchone()
+    
+    history = json.loads(row[0]) if row else [{"role": "system", "content": _build_system_prompt(lang, ctx.can_use_tools)}]
+    
+    if not any(lang in str(h.get("content", "")) for h in history if h["role"] == "system"):
+        history = [{"role": "system", "content": _build_system_prompt(lang, ctx.can_use_tools)}]
+
+    history.append({"role": "user", "content": text})
+    if len(history) > 20: history = [history[0]] + history[-18:]
+
     for _ in range(4):
-        res = await _ai_call(hist)
-        if "error" in res:
-            cached["history"] = hist
-            _ai_sessions[key] = cached
-            return f"❌ **AI Error:**\n```\n{res['error']}\n```"
+        res = await _ai_call(history, image_url=image_url, is_vision=bool(image_url))
+        if "error" in res: return f"❌ **AI Error:**\n```\n{res['error']}\n```"
+            
         msg = res["message"]
         tcs = msg.get("tool_calls") or []
+        
         if not tcs:
-            hist.append({"role": "assistant", "content": msg.get("content", "")})
-            cached["history"] = hist
-            _ai_sessions[key] = cached
+            history.append({"role": "assistant", "content": msg.get("content", "")})
+            async with aiosqlite.connect(DB) as db:
+                await db.execute("INSERT INTO ai_memory(guild_id, user_id, history) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET history=excluded.history", (ctx.guild.id, ctx.user.id, json.dumps(history, ensure_ascii=False)))
+                await db.commit()
             return msg.get("content", "") or "(no reply)"
-        hist.append({"role": "assistant", "content": msg.get("content", ""), "tool_calls": tcs})
+
+        history.append({"role": "assistant", "content": msg.get("content", ""), "tool_calls": tcs})
         for tc in tcs:
             fn = tc["function"]
             try: args = json.loads(fn.get("arguments") or "{}")
             except Exception: args = {}
-            out = await _exec_ai_tool(i, fn["name"], args)
-            hist.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": out[:1900]})
-    cached["history"] = hist
-    _ai_sessions[key] = cached
+            out = await _exec_ai_tool(ctx, fn["name"], args)
+            history.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": out[:1900]})
+
     return "⚠️ Tool loop stopped."
 
+# ================================================================ AI Commands & Mentions
 @bot.tree.command(name="ai", description="Chat with AI in your language / كلم المساعد الذكي بلغتك")
-@app_commands.describe(message="Your message in any language / رسالتك بأي لغة")
 async def ai_cmd(i: discord.Interaction, message: str):
     if not i.guild: return await i.response.send_message("❌ Server only.", ephemeral=True)
-    if not await _ai_can_chat(i): return await i.response.send_message("❌ AI is disabled for you here.", ephemeral=True)
     if not AI_API_KEY: return await i.response.send_message("❌ AI not configured.", ephemeral=True)
     await i.response.defer()
-    reply = await _run_ai(i, message)
+    ctx = AIContext(i.guild, i.user, await _ai_can_sensitive(i), i.channel)
+    reply = await _run_ai(ctx, message)
     for j in range(0, min(len(reply), 5700), 1900): await i.followup.send(reply[j:j+1900])
 
 @bot.tree.command(name="ai-reset", description="Clear your AI memory / امسح ذاكرة المحادثة")
 async def ai_reset(i: discord.Interaction):
-    _ai_sessions.pop((i.guild_id, i.user.id), None)
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("DELETE FROM ai_memory WHERE guild_id=? AND user_id=?", (i.guild_id, i.user.id))
+        await db.commit()
     await i.response.send_message("✅ Memory cleared / تم مسح الذاكرة.", ephemeral=True)
 
-@bot.tree.command(name="set-ai-default", description="Default AI access / الوضع الافتراضي للـ AI")
-@app_commands.choices(state=[app_commands.Choice(name="On / مفعّل للكل", value="1"), app_commands.Choice(name="Off / موقوف", value="0")])
-async def set_ai_default(i: discord.Interaction, state: app_commands.Choice[str]):
-    if not is_admin(i.user): return await i.response.send_message("❌ Admin only.", ephemeral=True)
-    await _ai_set_setting(i.guild_id, "chat_default", state.value)
-    await i.response.send_message(f"✅ Default = **{state.name}**", ephemeral=True)
-
-@bot.tree.command(name="set-ai-user", description="Allow / deny a member / سماح أو منع عضو")
-@app_commands.choices(action=[app_commands.Choice(name="Allow", value="allow"), app_commands.Choice(name="Deny", value="deny"), app_commands.Choice(name="Reset", value="reset")])
-async def set_ai_user(i: discord.Interaction, member: discord.Member, action: app_commands.Choice[str]):
+@bot.tree.command(name="set-ai-mention-roles", description="تحديد الرتبة المسموح لها بإعطاء أوامر للبوت بالمنشن")
+@app_commands.choices(action=[app_commands.Choice(name="Add Role", value="add"), app_commands.Choice(name="Remove Role", value="remove"), app_commands.Choice(name="Clear", value="clear")])
+async def set_ai_mention_roles(i: discord.Interaction, action: app_commands.Choice[str], role: Optional[discord.Role] = None):
     if not is_admin(i.user): return await i.response.send_message("❌ Admin only.", ephemeral=True)
     async with aiosqlite.connect(DB) as db:
-        await db.execute("DELETE FROM ai_allow WHERE guild_id=? AND user_id=?", (i.guild_id, member.id))
-        await db.execute("DELETE FROM ai_deny WHERE guild_id=? AND user_id=?", (i.guild_id, member.id))
-        if action.value == "allow": await db.execute("INSERT INTO ai_allow VALUES(?,?)", (i.guild_id, member.id))
-        elif action.value == "deny": await db.execute("INSERT INTO ai_deny VALUES(?,?)", (i.guild_id, member.id))
+        if action.value == "add" and role:
+            await db.execute("INSERT OR IGNORE INTO ai_mention_roles(guild_id, role_id) VALUES(?,?)", (i.guild.id, role.id))
+            msg = f"✅ الرتبة {role.mention} أصبحت مسموح لها بإعطاء أوامر للبوت."
+        elif action.value == "remove" and role:
+            await db.execute("DELETE FROM ai_mention_roles WHERE guild_id=? AND role_id=?", (i.guild.id, role.id))
+            msg = f"🗑️ تم إزالة الرتبة {role.mention}."
+        elif action.value == "clear":
+            await db.execute("DELETE FROM ai_mention_roles WHERE guild_id=?", (i.guild.id,))
+            msg = "🗑️ تم مسح كل الرتب."
+        else: return await i.response.send_message("❌ Provide a role.", ephemeral=True)
         await db.commit()
-    await i.response.send_message(f"✅ {action.name} → {member.mention}", ephemeral=True)
+    await i.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="set-ai-admin", description="Allow sensitive AI commands / السماح بالأوامر الخطيرة")
-@app_commands.choices(action=[app_commands.Choice(name="Grant", value="grant"), app_commands.Choice(name="Revoke", value="revoke")])
-async def set_ai_admin(i: discord.Interaction, member: discord.Member, action: app_commands.Choice[str]):
-    if not is_admin(i.user): return await i.response.send_message("❌ Admin only.", ephemeral=True)
+@bot.event
+async def on_message(message):
+    if message.author.bot: return
+    if not message.guild: return
+    
+    content_lower = message.content.lower()
     async with aiosqlite.connect(DB) as db:
-        if action.value == "grant": await db.execute("INSERT OR IGNORE INTO ai_admin_users VALUES(?,?)", (i.guild_id, member.id))
-        else: await db.execute("DELETE FROM ai_admin_users WHERE guild_id=? AND user_id=?", (i.guild_id, member.id))
-        await db.commit()
-    await i.response.send_message(f"✅ {action.name} → {member.mention}", ephemeral=True)
+        cur = await db.execute("SELECT reply FROM auto_replies WHERE guild_id=? AND trigger_word=?", (message.guild.id, content_lower))
+        auto_row = await cur.fetchone()
+        if auto_row:
+            await message.reply(auto_row[0])
+            return
 
-@bot.tree.command(name="ai-help", description="What can the AI do? / إمكانيات المساعد")
-async def ai_help(i: discord.Interaction):
-    await i.response.send_message(
-        "🤖 **AI Assistant**\n\n"
-        "`/ai message:...` — كلم المساعد (يرد بنفس لغتك)\n"
-        "`/ai-reset` — امسح المحادثة\n\n"
-        "**أمثلة:**\n"
-        "• `/ai مين فلان؟`\n"
-        "• `/ai اعمل رول Test بلون أحمر`\n"
-        "• `/ai اعمل قناة خاصة للأدمن بس`\n"
-        "• `/ai قولي إحصائيات السيرفر`\n"
-        "• `/ai العب معايا لغز`",
-        ephemeral=True
-    )
+    if bot.user in message.mentions:
+        content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+        if not content and not message.attachments: return await message.reply("أهلاً بك! كيف يمكنني مساعدتك؟ 👋")
+
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute("SELECT role_id FROM ai_mention_roles WHERE guild_id=?", (message.guild.id,))
+            allowed_roles = [r[0] for r in await cur.fetchall()]
+            
+        is_allowed = is_admin(message.author) or any(r.id in allowed_roles for r in message.author.roles)
+        ctx = AIContext(message.guild, message.author, is_allowed, message.channel)
+        
+        image_url = None
+        if message.attachments:
+            for att in message.attachments:
+                if att.content_type and "image" in att.content_type:
+                    image_url = att.url
+                    break
+        
+        async with message.channel.typing():
+            reply = await _run_ai(ctx, content or "حلل الصورة دي", image_url=image_url)
+            for j in range(0, min(len(reply), 5700), 1900):
+                await message.reply(reply[j:j+1900])
+    await bot.process_commands(message)
+
+@bot.tree.command(name="add-auto-reply", description="إضافة رد تلقائي لكلمة معينة")
+async def add_auto_reply(i: discord.Interaction, trigger_word: str, reply: str):
+    if not await gate(i, "add-auto-reply", editor=True): return
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("INSERT INTO auto_replies(guild_id, trigger_word, reply) VALUES(?,?,?) ON CONFLICT(guild_id, trigger_word) DO UPDATE SET reply=excluded.reply", (i.guild.id, trigger_word.lower(), reply))
+        await db.commit()
+    await i.response.send_message(f"✅ البوت هيرد بـ `{reply}` لما حد يقول `{trigger_word}`.", ephemeral=True)
+
+# ================================================================ الاقتصاد (بدون كازينو)
+@bot.tree.command(name="transfer", description="تحويل نقاط لعضو تاني")
+async def transfer_cmd(i: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100000]):
+    if member.id == i.user.id: return await i.response.send_message("❌ متحولش لنفسك يا نجم.", ephemeral=True)
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, i.user.id))
+        sender_pts = (await cur.fetchone() or [0])[0]
+        if sender_pts < amount:
+            await db.rollback()
+            return await i.response.send_message("❌ رصيدك مش كفاية.", ephemeral=True)
+        await db.execute("UPDATE members SET points = points - ? WHERE guild_id=? AND user_id=?", (amount, i.guild.id, i.user.id))
+        await db.execute("INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET points = points + ?", (i.guild.id, member.id, amount, amount))
+        stamp = now_utc().isoformat()
+        season = await get_current_season(i.guild.id)
+        await db.execute("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, i.user.id, -amount, stamp, "transfer_out", season))
+        await db.execute("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, member.id, amount, stamp, "transfer_in", season))
+        await db.commit()
+    await i.response.send_message(f"✅ تم تحويل **{amount}** نقطة لـ {member.mention} بنجاح!", ephemeral=True)
+
+# ================================================================ الرتب التفاعلية (Reaction Roles)
+@bot.tree.command(name="setup-reaction-role", description="إنشاء لوحة رتب تفاعلية (أزرار تفاعل)")
+async def setup_reaction_role(i: discord.Interaction, title: str, description: str, emoji1: str, role1: discord.Role, emoji2: Optional[str] = None, role2: Optional[discord.Role] = None):
+    if not await gate(i, "setup-reaction-role", editor=True): return
+    embed = discord.Embed(title=title, description=description, color=discord.Color.blue())
+    msg = await i.channel.send(embed=embed)
+    async with aiosqlite.connect(DB) as db:
+        await msg.add_reaction(emoji1)
+        await db.execute("INSERT OR REPLACE INTO reaction_roles VALUES(?,?,?,?)", (i.guild.id, msg.id, emoji1, role1.id))
+        if emoji2 and role2:
+            await msg.add_reaction(emoji2)
+            await db.execute("INSERT OR REPLACE INTO reaction_roles VALUES(?,?,?,?)", (i.guild.id, msg.id, emoji2, role2.id))
+        await db.commit()
+    await i.response.send_message("✅ تم إنشاء لوحة الرتب التفاعلية بنجاح!", ephemeral=True)
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.guild_id is None or payload.user_id == bot.user.id: return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT role_id FROM reaction_roles WHERE guild_id=? AND message_id=? AND emoji=?", (payload.guild_id, payload.message_id, str(payload.emoji)))
+        row = await cur.fetchone()
+        if row:
+            guild = bot.get_guild(payload.guild_id)
+            role, member = guild.get_role(row[0]), guild.get_member(payload.user_id)
+            if role and member:
+                try: await member.add_roles(role, reason="Reaction Role")
+                except discord.Forbidden: pass
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    if payload.guild_id is None: return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT role_id FROM reaction_roles WHERE guild_id=? AND message_id=? AND emoji=?", (payload.guild_id, payload.message_id, str(payload.emoji)))
+        row = await cur.fetchone()
+        if row:
+            guild = bot.get_guild(payload.guild_id)
+            role, member = guild.get_role(row[0]), guild.get_member(payload.user_id)
+            if role and member:
+                try: await member.remove_roles(role, reason="Reaction Role Removed")
+                except discord.Forbidden: pass
+
+# ================================================================ البطولات (Tournaments)
+class TournamentJoinView(discord.ui.View):
+    def __init__(self, tournament_id):
+        super().__init__(timeout=None)
+        self.tournament_id = tournament_id
+
+    @discord.ui.button(label="تسجيل الدخول / Join", style=discord.ButtonStyle.success, emoji="⚔️")
+    async def join_btn(self, i: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute("SELECT status, max_players FROM tournaments WHERE id=?", (self.tournament_id,))
+            tour = await cur.fetchone()
+            if not tour or tour[0] != "open":
+                return await i.response.send_message("❌ البطولة دي اتقفلت خلاص أو مش موجودة.", ephemeral=True)
+            cur = await db.execute("SELECT 1 FROM tournament_players WHERE tournament_id=? AND user_id=?", (self.tournament_id, i.user.id))
+            if await cur.fetchone():
+                return await i.response.send_message("❌ إنت مسجل فيها خلاص يا بطل!", ephemeral=True)
+            await db.execute("INSERT INTO tournament_players(tournament_id, user_id) VALUES(?,?)", (self.tournament_id, i.user.id))
+            await db.commit()
+            cur = await db.execute("SELECT COUNT(*) FROM tournament_players WHERE tournament_id=?", (self.tournament_id,))
+            count = (await cur.fetchone())[0]
+        await i.response.send_message(f"✅ تم تسجيلك في البطولة! (المشاركين: {count}/{tour[1]})", ephemeral=True)
+
+@bot.tree.command(name="tournament-create", description="إنشاء بطولة جديدة")
+async def tournament_create(i: discord.Interaction, name: str, max_players: app_commands.Range[int, 2, 32]):
+    if not await gate(i, "tournament-create", editor=True): return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("INSERT INTO tournaments(guild_id, name, max_players, status) VALUES(?,?,?,?)", (i.guild.id, name, max_players, "open"))
+        tour_id = cur.lastrowid
+        await db.commit()
+    embed = discord.Embed(title=f"🏆 بطولة: {name}", description=f"المطلوب: **{max_players}** لاعب.\nاضغط على الزر عشان تسجل!", color=discord.Color.gold())
+    await i.channel.send(embed=embed, view=TournamentJoinView(tour_id))
+    await i.response.send_message("✅ تم إنشاء البطولة!", ephemeral=True)
+
+@bot.tree.command(name="tournament-start", description="بدء البطولة وتوزيع المباريات")
+async def tournament_start(i: discord.Interaction, tournament_id: int):
+    if not await gate(i, "tournament-start", editor=True): return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT status FROM tournaments WHERE id=? AND guild_id=?", (tournament_id, i.guild.id))
+        tour = await cur.fetchone()
+        if not tour or tour[0] != "open": return await i.response.send_message("❌ البطولة مش موجودة أو بدأت خلاص.", ephemeral=True)
+        cur = await db.execute("SELECT user_id FROM tournament_players WHERE tournament_id=?", (tournament_id,))
+        players = [r[0] for r in await cur.fetchall()]
+        if len(players) < 2: return await i.response.send_message("❌ محتاج على الأقل لاعبين!", ephemeral=True)
+        await db.execute("UPDATE tournaments SET status='ongoing' WHERE id=?", (tournament_id,))
+        random.shuffle(players)
+        matches = []
+        for j in range(0, len(players) - 1, 2):
+            p1, p2 = players[j], players[j+1]
+            await db.execute("INSERT INTO tournament_matches(tournament_id, round, p1_id, p2_id) VALUES(?,?,?,?)", (tournament_id, 1, p1, p2))
+            matches.append((p1, p2))
+        await db.commit()
+    matches_text = "\n".join([f"⚔️ <@{p1}> ضد <@{p2}>" for p1, p2 in matches])
+    await i.channel.send(embed=discord.Embed(title=f"🏆 بدء بطولة #{tournament_id}", description=f"**مباريات الدور الأول:**\n\n{matches_text}", color=discord.Color.red()))
+    await i.response.send_message("✅ تم بدء البطولة!", ephemeral=True)
+
+@bot.tree.command(name="tournament-set-winner", description="تحديد الفايز في مباراة")
+async def tournament_set_winner(i: discord.Interaction, tournament_id: int, winner: discord.Member, loser: discord.Member):
+    if not await gate(i, "tournament-set-winner", editor=True): return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("UPDATE tournament_matches SET winner_id=? WHERE tournament_id=? AND ((p1_id=? AND p2_id=?) OR (p1_id=? AND p2_id=?)) AND winner_id IS NULL", (winner.id, tournament_id, winner.id, loser.id, loser.id, winner.id))
+        if cur.rowcount == 0: return await i.response.send_message("❌ المباراة دي مش موجودة أو اتحدد الفايز فيها.", ephemeral=True)
+        await db.commit()
+    await i.response.send_message(f"✅ تم تسجيل فوز {winner.mention} على {loser.mention}!", ephemeral=True)
+# ================================================================ الأوامر العامة (Points, Profile, Leaderboard)
+@bot.tree.command(name="points", description="Check your points / عرض رصيدك")
+@app_commands.checks.cooldown(1, 5.0)
+async def points_cmd(i: discord.Interaction, member: Optional[discord.Member] = None):
+    if not await gate(i, "points"): return
+    target = member or i.user
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, target.id))
+        row = await cur.fetchone()
+    pts = row[0] if row else 0
+    ladder = await get_ladder(i.guild.id)
+    bar = progress_bar(pts, ladder)
+    embed = discord.Embed(title=f"💰 {target.display_name}'s Balance", description=f"**Points:** {pts}\n**Progress:** {bar}", color=discord.Color.gold())
+    await i.response.send_message(embed=embed)
+
+@bot.tree.command(name="leaderboard", description="View the top members / قائمة المتصدرين")
+@app_commands.checks.cooldown(1, 10.0)
+@app_commands.choices(period=PERIOD_CHOICES)
+async def leaderboard(i: discord.Interaction, period: app_commands.Choice[str] = None):
+    if not await gate(i, "leaderboard"): return
+    await i.response.defer()
+    p = period.value if period else "all"
+    season = await get_current_season(i.guild.id)
+    
+    async with aiosqlite.connect(DB) as db:
+        if p == "week":
+            since = (now_utc() - timedelta(days=7)).isoformat()
+            cur = await db.execute("SELECT user_id, SUM(points) FROM point_events WHERE guild_id=? AND created_at>=? GROUP BY user_id ORDER BY SUM(points) DESC LIMIT 10", (i.guild.id, since))
+        elif p == "season":
+            cur = await db.execute("SELECT user_id, SUM(points) FROM point_events WHERE guild_id=? AND season_id=? GROUP BY user_id ORDER BY SUM(points) DESC LIMIT 10", (i.guild.id, season))
+        else:
+            cur = await db.execute("SELECT user_id, points FROM members WHERE guild_id=? ORDER BY points DESC LIMIT 10", (i.guild.id,))
+        rows = await cur.fetchall()
+        
+    if not rows: return await i.followup.send("ℹ️ No data yet.")
+    title = tr("lb_week") if p == "week" else tr("lb_season") if p == "season" else tr("lb_all")
+    text = "\n".join(f"**{n}.** <@{u}> — {pts} pts" for n, (u, pts) in enumerate(rows, 1))
+    await i.followup.send(embed=discord.Embed(title=title, description=text, color=discord.Color.gold()))
+
+@bot.tree.command(name="profile", description="View member profile / عرض الملف الشخصي")
+@app_commands.checks.cooldown(1, 5.0)
+async def profile(i: discord.Interaction, member: Optional[discord.Member] = None):
+    if not await gate(i, "profile"): return
+    target = member or i.user
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, target.id))
+        pts_row = await cur.fetchone()
+        cur = await db.execute("SELECT roblox_name FROM links WHERE guild_id=? AND user_id=?", (i.guild.id, target.id))
+        rob_row = await cur.fetchone()
+        cur = await db.execute("SELECT bio FROM bios WHERE guild_id=? AND user_id=?", (i.guild.id, target.id))
+        bio_row = await cur.fetchone()
+        
+    pts = pts_row[0] if pts_row else 0
+    roblox = rob_row[0] if rob_row else "Not linked"
+    bio = bio_row[0] if bio_row else "No bio set."
+    
+    embed = discord.Embed(title=f"👤 {target.display_name}'s Profile", color=target.color)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="Points", value=f"💰 {pts}", inline=True)
+    embed.add_field(name="Roblox", value=f"🎮 {roblox}", inline=True)
+    embed.add_field(name="Bio", value=bio, inline=False)
+    await i.response.send_message(embed=embed)
+
+@bot.tree.command(name="rates", description="View points and ranks config / الأسعار والرتب")
+@app_commands.checks.cooldown(1, 5.0)
+async def rates_cmd(i: discord.Interaction):
+    if not await gate(i, "rates"): return
+    ladder = await get_ladder(i.guild.id)
+    pts_text = "\n".join(f"• `{k}`: {await points_for_key(i.guild.id, k)} pts" for k in POINT_LABELS)
+    rank_text = "\n".join(f"• **{n}**: {p} pts" for n, p in ladder)
+    embed = discord.Embed(title="📊 Rates & Ranks / الأسعار والرتب", color=discord.Color.blue())
+    embed.add_field(name="Points / النقاط", value=pts_text[:1024], inline=False)
+    embed.add_field(name="Ranks / الرتب", value=rank_text[:1024], inline=False)
+    await i.response.send_message(embed=embed)
+
+@bot.tree.command(name="link", description="Link your Roblox username / ربط حساب روبلوكس")
+@app_commands.checks.cooldown(1, 10.0)
+async def link_cmd(i: discord.Interaction, roblox_name: str):
+    if not await gate(i, "link"): return
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("INSERT INTO links(guild_id, user_id, roblox_name) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET roblox_name=excluded.roblox_name", (i.guild.id, i.user.id, roblox_name))
+        await db.commit()
+    await i.response.send_message(f"✅ Linked your Roblox username to **{roblox_name}**.", ephemeral=True)
+
+@bot.tree.command(name="set-bio", description="Set your profile bio / كتابة سيرتك الذاتية")
+@app_commands.checks.cooldown(1, 10.0)
+async def set_bio(i: discord.Interaction, text: str):
+    if not await gate(i, "set-bio"): return
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("INSERT INTO bios(guild_id, user_id, bio) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET bio=excluded.bio", (i.guild.id, i.user.id, text[:200]))
+        await db.commit()
+    await i.response.send_message("✅ Bio updated successfully.", ephemeral=True)
+
+@bot.tree.command(name="stats", description="War stats / إحصائيات الحروب")
+@app_commands.checks.cooldown(1, 5.0)
+async def stats_cmd(i: discord.Interaction):
+    if not await gate(i, "stats"): return
+    await i.response.defer()
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT data, result FROM logs WHERE guild_id=? AND type='war' AND status='accepted'", (i.guild.id,))
+        rows = await cur.fetchall()
+    wins, losses = {}, {}
+    for data_str, result in rows:
+        try:
+            crew = json.loads(data_str or "{}").get("crew", "Unknown")
+            if result == "win": wins[crew] = wins.get(crew, 0) + 1
+            elif result == "loss": losses[crew] = losses.get(crew, 0) + 1
+        except: pass
+    if not wins and not losses: return await i.followup.send("ℹ️ No war data available.")
+    embed = discord.Embed(title="⚔️ War Stats by Crew", color=discord.Color.red())
+    all_crews = set(wins.keys()).union(set(losses.keys()))
+    for c in all_crews:
+        embed.add_field(name=c, value=f"✅ Wins: {wins.get(c, 0)}\n❌ Losses: {losses.get(c, 0)}", inline=True)
+    await i.followup.send(embed=embed)
+
+@bot.tree.command(name="my-logs", description="View your recent logs / عرض لوجاتك")
+@app_commands.checks.cooldown(1, 5.0)
+async def my_logs(i: discord.Interaction):
+    if not await gate(i, "my-logs"): return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT id, type, status, created_at FROM logs WHERE guild_id=? AND author_id=? ORDER BY id DESC LIMIT 10", (i.guild.id, i.user.id))
+        rows = await cur.fetchall()
+    if not rows: return await i.response.send_message(tr("no_my_logs"), ephemeral=True)
+    lines = [f"**#{lid}** — {LOG_TYPES.get(t, {}).get('label', t)} — {STATUS_LABEL.get(s, s)}" for lid, t, s, _ in rows]
+    await i.response.send_message("📜 **Your Recent Logs:**\n" + "\n".join(lines), ephemeral=True)
+
+@bot.tree.command(name="log-info", description="View details of a log / تفاصيل لوج")
+@app_commands.checks.cooldown(1, 5.0)
+async def log_info(i: discord.Interaction, log_id: int):
+    if not await gate(i, "log-info"): return
+    row = await get_log(log_id)
+    if not row or row["guild_id"] != i.guild.id: return await i.response.send_message(tr("log_not_found"), ephemeral=True)
+    data = json.loads(row["data"] or "{}")
+    embed = discord.Embed(title=f"Log #{log_id} — {LOG_TYPES.get(row['type'], {}).get('label', row['type'])}", color=discord.Color.blue())
+    embed.add_field(name="Author", value=f"<@{row['author_id']}>", inline=True)
+    embed.add_field(name="Status", value=STATUS_LABEL.get(row["status"], row["status"]), inline=True)
+    if row["result"]: embed.add_field(name="Result", value=row["result"].capitalize(), inline=True)
+    if row["points"]: embed.add_field(name="Points", value=str(row["points"]), inline=True)
+    if data.get("score"): embed.add_field(name="Score", value=data["score"], inline=True)
+    await i.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="reviewer-stats", description="Reviewer stats / إحصائيات المراجعين")
+@app_commands.checks.cooldown(1, 10.0)
+async def reviewer_stats(i: discord.Interaction):
+    if not await gate(i, "reviewer-stats", editor=True): return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT reviewer_id, COUNT(*) FROM logs WHERE guild_id=? AND reviewer_id IS NOT NULL AND status IN ('accepted', 'rejected') GROUP BY reviewer_id ORDER BY COUNT(*) DESC", (i.guild.id,))
+        rows = await cur.fetchall()
+    if not rows: return await i.response.send_message("ℹ️ No reviews recorded yet.", ephemeral=True)
+    text = "\n".join(f"<@{r}> — {c} reviews" for r, c in rows[:15])
+    await i.response.send_message(embed=discord.Embed(title="📊 Reviewer Stats", description=text, color=discord.Color.blue()))
+
+@bot.tree.command(name="inactive", description="List inactive members / الأعضاء غير النشطين")
+@app_commands.checks.cooldown(1, 10.0)
+async def inactive_cmd(i: discord.Interaction, days: app_commands.Range[int, 1, 365] = 30):
+    if not await gate(i, "inactive", editor=True): return
+    await i.response.defer()
+    since = (now_utc() - timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT user_id FROM members WHERE guild_id=? AND user_id NOT IN (SELECT author_id FROM logs WHERE guild_id=? AND created_at>=?)", (i.guild.id, i.guild.id, since))
+        rows = await cur.fetchall()
+    if not rows: return await i.followup.send(f"✅ No inactive members in the last {days} days.")
+    text = "\n".join(f"<@{r[0]}>" for r in rows[:30])
+    if len(rows) > 30: text += f"\n...and {len(rows)-30} more."
+    await i.followup.send(f"💤 **Inactive members (>{days} days):**\n{text}", allowed_mentions=discord.AllowedMentions.none())
+
+# ================================================================ أوامر الطواقم (Crews)
+@bot.tree.command(name="crews-list", description="View all crews / عرض الطواقم")
+@app_commands.checks.cooldown(1, 5.0)
+async def crews_list(i: discord.Interaction):
+    if not await gate(i, "crews-list"): return
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT crew_name, owner_id FROM crews WHERE guild_id=?", (i.guild.id,))
+        rows = await cur.fetchall()
+    if not rows: return await i.response.send_message(tr("no_crews"), ephemeral=True)
+    text = "\n".join(f"🛡️ **{name}** — Owner: <@{owner}>" for name, owner in rows)
+    await i.response.send_message(embed=discord.Embed(title="🎖️ Registered Crews", description=text[:2000], color=discord.Color.blue()))
+
+@bot.tree.command(name="create-new-crew", description="Create a new crew / إنشاء طاقم جديد")
+@app_commands.checks.cooldown(1, 10.0)
+async def create_new_crew(i: discord.Interaction, name: str, owner: discord.Member, captain1: Optional[discord.Member] = None, captain2: Optional[discord.Member] = None):
+    if not await gate(i, "create-new-crew", editor=True): return
+    name = name.strip()[:40]
+    if len(name) < 2: return await i.response.send_message(tr("crew_bad_name"), ephemeral=True)
+    if owner.bot: return await i.response.send_message(tr("crew_bad_owner"), ephemeral=True)
+    captains = [c.id for c in (captain1, captain2) if c and not c.bot]
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute("SELECT 1 FROM crews WHERE guild_id=? AND LOWER(crew_name)=LOWER(?)", (i.guild.id, name))
+        if await cur.fetchone(): return await i.response.send_message(tr("crew_exists"), ephemeral=True)
+        await db.execute("INSERT INTO crews(guild_id, crew_name, owner_id, captains_data, created_at) VALUES(?,?,?,?,?)", (i.guild.id, name, owner.id, json.dumps(captains), now_utc().isoformat()))
+        await db.commit()
+    await i.response.send_message(tr("crew_created", name=name), ephemeral=True)
+
+@bot.tree.command(name="crews-delete-all", description="Delete all crews / حذف كل الطواقم")
+@app_commands.checks.cooldown(1, 10.0)
+async def crews_delete_all(i: discord.Interaction, confirm: str):
+    if not await gate(i, "crews-delete-all", editor=True): return
+    if confirm != "DELETE": return await i.response.send_message("❌ Type `DELETE` to confirm.", ephemeral=True)
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("DELETE FROM crews WHERE guild_id=?", (i.guild.id,))
+        await db.commit()
+    await i.response.send_message("🗑️ All crews deleted.", ephemeral=True)
+
 # ================================================================ المساعدة (Help)
 HELP_DATA = [
-    ("📜 Part 1 — Logging Activity / تسجيل النشاط", discord.Color.gold(), [
-        ("/log-war", "Log a Crew War (min 2 files) / تسجيل حرب كرو."),
-        ("/log-1v1", "Log a 1v1 fight / تسجيل فايت 1 ضد 1."),
-        ("/log-2v2", "Log a 2v2 fight / تسجيل فايت 2 ضد 2."),
-        ("/log-training", "Log a training session / تسجيل تدريب."),
-        ("/log-tryout", "Log a tryout / تسجيل تراي أوت."),
-        ("/edit-log", "Edit a pending log / تعديل لوج قيد المراجعة."),
-        ("/resubmit", "Fix and resend a rejected log / إعادة إرسال لوج مرفوض."),
-        ("/my-logs", "View your latest logs / عرض لوجاتك."),
-    ]),
-    ("🛡️ Part 2 — Review & Moderation / المراجعة", discord.Color.blue(), [
-        ("/pending", "List logs waiting for review / اللوجات المنتظرة."),
-        ("/revoke-log", "Cancel an accepted log / إلغاء لوج مقبول."),
-        ("/reviewer-stats", "Reviewer statistics / إحصائيات المراجعين."),
-        ("/inactive", "Members with no activity / الأعضاء غير النشطين."),
-        ("/season-reset", "Archive points and start new season / بدء موسم جديد."),
-        ("/season-top", "Top 10 of archived season / أفضل 10 في موسم."),
-        ("/verify-points", "Check balances against ledger / فحص الأرصدة."),
-        ("/backup", "Export backup / نسخة احتياطية."),
-        ("/restore-backup", "Restore backup / استعادة نسخة."),
-    ]),
-    ("⚙️ Part 3 — Configuration / الإعدادات", discord.Color.green(), [
-        ("/setchannel", "Set channels / تحديد القنوات."),
-        ("/setping", "Set ping roles / تحديد المنشن."),
-        ("/setroles", "Set role permissions / صلاحيات الرتب."),
-        ("/setrule", "Configure server rules / قوانين السيرفر."),
-        ("/set-log-points", "Set points per log type / نقاط اللوجات."),
-        ("/set-rank-points", "Set points for ranks / نقاط الرتب."),
-        ("/set-points", "Set member points / تعديل نقاط عضو."),
-        ("/sync-ranks", "Re-check ranks / مزامنة الرتب."),
-        ("/set-cmd-perms", "Lock commands to roles/users / قفل الأوامر."),
-        ("/grant-temp-admin", "Give temp admin / إعطاء صلاحيات مؤقتة."),
-        ("/revoke-temp-admin", "Remove temp admin / سحب الصلاحيات."),
-        ("/set-log-template", "Customize log layout / تخصيص تصميم اللوج."),
-        ("/set-log-emojis", "Set custom emojis / إيموجيات مخصصة."),
-        ("/show-log-emojis", "Show current emojis / عرض الإيموجيات."),
-        ("/reset-log-emojis", "Clear all emojis / مسح الإيموجيات."),
-        ("/settings", "Show server settings / عرض الإعدادات."),
-        ("/sync", "Re-sync slash commands / مزامنة الأوامر."),
-    ]),
-    ("🏆 Part 4 — Points & Public / النقاط", discord.Color.purple(), [
-        ("/points", "Check your points / رصيد النقاط."),
-        ("/leaderboard", "Top members / المتصدرين."),
-        ("/profile", "View profile card / بطاقتك الشخصية."),
-        ("/rates", "View points and rules / الأسعار."),
-        ("/link", "Link Roblox username / ربط روبلوكس."),
-        ("/stats", "War record stats / إحصائيات الحروب."),
-        ("/help", "Show this manual / عرض دليل الأوامر."),
-    ]),
-    ("🎮 Part 5 — Systems & Games / الأنظمة", discord.Color.teal(), [
-        ("/streak", "Check login streak / عرض الستريك."),
-        ("/shop", "Point shop / متجر النقاط."),
-        ("/buy", "Buy from shop / شراء منتج."),
-        ("/achievements", "Achievements list / الإنجازات."),
-        ("/claim-achievement", "Claim achievement / استلام إنجاز."),
-        ("/quests", "Daily quests / المهام اليومية."),
-        ("/event", "Create event (Admin) / إنشاء فعالية."),
-        ("/start-vote", "Start MVP vote (Admin) / بدء تصويت."),
-        ("/h2h", "Head-to-head stats / مواجهات مباشرة."),
-        ("/lfg", "Looking for group / البحث عن فريق."),
-        ("/daily", "Claim daily bonus / المكافأة اليومية."),
-        ("/setup-tickets", "Setup tickets / إنشاء تذاكر."),
-        ("/create-temp-voice", "Create temp voice / غرفة صوتية مؤقتة."),
-        ("/purge", "Purge messages (Admin) / مسح الرسائل."),
-        ("/embed", "Embed builder (Admin) / صانع الرسائل."),
-        ("/customize-msg", "Customize bot messages / تخصيص الرسائل."),
-        ("/create-custom-role", "Create custom color role / رتبة مخصصة."),
-        ("/set-notification", "Set notifications / ضبط الإشعارات."),
-        ("/set-lfg-roles", "Set LFG roles / رتب البحث عن فريق."),
-        ("/set-top-rewards", "Set top 3 rewards / جوائز المتصدرين."),
-        ("/ai", "Chat with AI / المساعد الذكي."),
-        ("/ai-reset", "Reset AI memory / مسح ذاكرة AI."),
-        ("/ai-help", "AI capabilities / إمكانيات AI."),
-        ("/set-ai-default", "AI Default Access / الوضع الافتراضي للـ AI."),
-        ("/set-ai-user", "Allow/Deny member / سماح/منع عضو."),
-        ("/set-ai-admin", "Allow sensitive AI / السماح بالأوامر الخطيرة."),
-    ])
+    ("📜 Part 1 — Logging Activity", discord.Color.gold(), [("/log-war", "Log a Crew War"), ("/log-1v1", "Log a 1v1 fight"), ("/log-2v2", "Log a 2v2 fight"), ("/log-training", "Log training"), ("/log-tryout", "Log a tryout"), ("/edit-log", "Edit a pending log"), ("/resubmit", "Fix and resend a rejected log")]),
+    ("🛡️ Part 2 — Review & Moderation", discord.Color.blue(), [("/pending", "List pending logs"), ("/revoke-log", "Cancel an accepted log"), ("/reviewer-stats", "Reviewer stats"), ("/inactive", "Inactive members"), ("/season-reset", "Start new season"), ("/verify-points", "Check balances")]),
+    ("⚙️ Part 3 — Configuration", discord.Color.green(), [("/setchannel", "Set channels"), ("/setping", "Set ping roles"), ("/setroles", "Set role permissions"), ("/setrule", "Configure server rules"), ("/set-log-points", "Set log points"), ("/set-rank-points", "Set rank points"), ("/sync-ranks", "Re-check ranks"), ("/set-cmd-perms", "Lock commands"), ("/set-log-emojis", "Set custom emojis")]),
+    ("🏆 Part 4 — Points & Public", discord.Color.purple(), [("/points", "Check your points"), ("/leaderboard", "Top members"), ("/profile", "View profile"), ("/rates", "View rates"), ("/link", "Link Roblox"), ("/stats", "War stats"), ("/help", "Show this manual")]),
+    ("🎮 Part 5 — Systems & Games", discord.Color.teal(), [("/streak", "Check streak"), ("/shop", "Point shop"), ("/buy", "Buy item"), ("/achievements", "View achievements"), ("/quests", "Daily quests"), ("/event", "Create event"), ("/h2h", "Head-to-head stats"), ("/lfg", "Looking for group"), ("/daily", "Daily bonus"), ("/setup-tickets", "Setup tickets"), ("/create-temp-voice", "Temp voice channel"), ("/ai", "Chat with AI")])
 ]
 
 def get_help_embeds():
     embeds = []
     for title, color, items in HELP_DATA:
         e = discord.Embed(title=f"{title} ({BOT_VERSION})", color=color)
-        for cmd, desc in items:
-            e.add_field(name=f"`{cmd}`", value=desc, inline=False)
-        e.set_footer(text="DragonSlayerBot • Bilingual")
+        for cmd, desc in items: e.add_field(name=f"`{cmd}`", value=desc, inline=False)
+        e.set_footer(text="DragonSlayerBot • Ultimate Edition")
         embeds.append(e)
     return embeds
 
@@ -2737,12 +2476,9 @@ def get_help_embeds():
 async def help_cmd(i: discord.Interaction):
     if not await gate(i, "help"): return
     await i.response.defer(ephemeral=True)
-    embeds = get_help_embeds()
-    if len(embeds) <= 10: await i.followup.send(embeds=embeds, ephemeral=True)
-    else:
-        for e in embeds[:10]: await i.followup.send(embed=e, ephemeral=True)
+    for e in get_help_embeds()[:5]: await i.followup.send(embed=e, ephemeral=True)
 
-@bot.tree.command(name="send-help-panel", description="Post the manual / إرسال الشرح")
+@bot.tree.command(name="send-help-panel", description="Post the manual in a channel / إرسال الشرح")
 @app_commands.checks.cooldown(1, 10.0)
 async def send_help_panel(i: discord.Interaction, channel: Optional[discord.TextChannel] = None):
     if not await gate(i, "send-help-panel", editor=True): return
@@ -2753,198 +2489,7 @@ async def send_help_panel(i: discord.Interaction, channel: Optional[discord.Text
     except discord.HTTPException as e:
         await i.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
-# ================================================================ الأنظمة الإضافية
-@bot.tree.command(name="customize-msg", description="Customize bot messages / تخصيص الرسائل")
-@app_commands.checks.cooldown(1, 5.0)
-async def customize_msg(i: discord.Interaction, key: str, title: str, desc: str, color: Optional[str] = None):
-    if not await gate(i, "customize-msg", editor=True): return
-    if len(title) > 256 or len(desc) > 4000:
-        return await i.response.send_message("❌ Title or description too long.", ephemeral=True)
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO custom_messages(guild_id, key, title, description, color) VALUES(?,?,?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET title=excluded.title, description=excluded.description, color=excluded.color", (i.guild.id, key, title, desc, color.replace("#", "") if color else None))
-        await db.commit()
-    await i.response.send_message(f"✅ Customized message `{key}`.", ephemeral=True)
-
-@bot.tree.command(name="set-custom-reward", description="Set custom rewards / تحديد المكافآت")
-@app_commands.checks.cooldown(1, 5.0)
-async def set_custom_reward(i: discord.Interaction, system_key: str, points: int, role: Optional[discord.Role] = None):
-    if not await gate(i, "set-custom-reward", editor=True): return
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO custom_settings(guild_id, key, value) VALUES(?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value", (i.guild.id, f"{system_key}_points", str(points)))
-        if role:
-            await db.execute("INSERT INTO custom_settings(guild_id, key, value) VALUES(?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value", (i.guild.id, f"{system_key}_role", str(role.id)))
-        await db.commit()
-    await i.response.send_message(f"✅ Saved reward for `{system_key}`: {points} points" + (f" and {role.mention}" if role else ""), ephemeral=True)
-
-@bot.tree.command(name="streak", description="Check your daily login streak / عرض الستريك")
-@app_commands.checks.cooldown(1, 5.0)
-async def streak_cmd(i: discord.Interaction):
-    if not await gate(i, "streak"): return
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT current_streak, max_streak FROM streaks WHERE guild_id=? AND user_id=?", (i.guild.id, i.user.id))
-        row = await cur.fetchone()
-    current, max_s = (row[0], row[1]) if row else (0, 0)
-    embed = await get_custom_msg(i.guild.id, "streak_msg", tr("streak_title"), tr("streak_desc", current=current, max=max_s), discord.Color.orange())
-    await i.response.send_message(embed=embed, ephemeral=True)
-
-class ShopPaginator(discord.ui.View):
-    def __init__(self, items, requester_id):
-        super().__init__(timeout=120)
-        self.items, self.requester_id = items, requester_id
-        self.page, self.per_page = 0, 5
-    def max_pages(self): return max(1, (len(self.items) - 1) // self.per_page + 1)
-    def get_embed(self):
-        chunk = self.items[self.page * self.per_page:(self.page + 1) * self.per_page]
-        desc = tr("shop_desc") + "\n\n"
-        for name, price, d in chunk: desc += f"🛒 **{name}** — {price} points\n┗ {d}\n\n"
-        embed = discord.Embed(title=tr("shop_title"), description=desc, color=discord.Color.gold())
-        embed.set_footer(text=tr("browse_page", page=self.page + 1, pages=self.max_pages()))
-        return embed
-    async def interaction_check(self, i: discord.Interaction) -> bool: return i.user.id == self.requester_id
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def prev(self, i: discord.Interaction, button: discord.ui.Button):
-        self.page = max(0, self.page - 1)
-        await i.response.edit_message(embed=self.get_embed(), view=self)
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def next(self, i: discord.Interaction, button: discord.ui.Button):
-        self.page = min(self.max_pages() - 1, self.page + 1)
-        await i.response.edit_message(embed=self.get_embed(), view=self)
-
-@bot.tree.command(name="add-shop-item", description="Add shop item / إضافة منتج")
-@app_commands.checks.cooldown(1, 5.0)
-async def add_shop_item(i: discord.Interaction, name: str, price: int, role: discord.Role, description: str):
-    if not await gate(i, "add-shop-item", editor=True): return
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO shop_items(guild_id, name, price, role_id, description) VALUES(?,?,?,?,?)", (i.guild.id, name, price, role.id, description))
-        await db.commit()
-    await i.response.send_message(f"✅ Added **{name}** to shop.", ephemeral=True)
-
-@bot.tree.command(name="shop", description="View point shop / متجر النقاط")
-@app_commands.checks.cooldown(1, 5.0)
-async def shop_cmd(i: discord.Interaction):
-    if not await gate(i, "shop"): return
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT name, price, description FROM shop_items WHERE guild_id=?", (i.guild.id,))
-        items = await cur.fetchall()
-    if not items: return await i.response.send_message(tr("shop_empty"), ephemeral=True)
-    view = ShopPaginator(items, i.user.id)
-    await i.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
-
-async def item_autocomplete(i: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT name FROM shop_items WHERE guild_id=? AND name LIKE ?", (i.guild.id, f"%{current}%"))
-        rows = await cur.fetchall()
-    return [app_commands.Choice(name=r[0], value=r[0]) for r in rows][:25]
-
-@bot.tree.command(name="buy", description="Buy from shop / شراء منتج")
-@app_commands.checks.cooldown(1, 5.0)
-@app_commands.autocomplete(item_name=item_autocomplete)
-async def buy_cmd(i: discord.Interaction, item_name: str):
-    if not await gate(i, "buy"): return
-    await i.response.defer(ephemeral=True)
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT id, price, role_id FROM shop_items WHERE guild_id=? AND name=?", (i.guild.id, item_name))
-        item = await cur.fetchone()
-        if not item: return await i.followup.send("❌ Item not found.", ephemeral=True)
-        item_id, price, role_id = item
-        role = i.guild.get_role(role_id)
-        if role and role in i.user.roles: return await i.followup.send("❌ You already own this role.", ephemeral=True)
-        await db.execute("BEGIN IMMEDIATE")
-        try:
-            cur = await db.execute("UPDATE members SET points = points - ? WHERE guild_id=? AND user_id=? AND points >= ?", (price, i.guild.id, i.user.id, price))
-            if cur.rowcount == 0:
-                await db.rollback()
-                cur = await db.execute("SELECT points FROM members WHERE guild_id=? AND user_id=?", (i.guild.id, i.user.id))
-                points = (await cur.fetchone() or [0])[0]
-                return await i.followup.send(tr("shop_no_points", price=price, points=points), ephemeral=True)
-            await db.execute("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, i.user.id, -price, now_utc().isoformat(), "shop", await get_current_season(i.guild.id)))
-            await db.commit()
-        except Exception as e:
-            await db.rollback()
-            return await i.followup.send(tr("db_err"), ephemeral=True)
-    if role:
-        try: await i.user.add_roles(role, reason="Shop Purchase")
-        except discord.Forbidden:
-            async with aiosqlite.connect(DB) as db:
-                await db.execute("UPDATE members SET points = points + ? WHERE guild_id=? AND user_id=?", (price, i.guild.id, i.user.id))
-                await db.execute("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, i.user.id, price, now_utc().isoformat(), "refund", await get_current_season(i.guild.id)))
-                await db.commit()
-            return await i.followup.send("❌ Failed to give role. Points refunded.", ephemeral=True)
-    await i.followup.send(tr("shop_bought", item=item_name, price=price), ephemeral=True)
-
-@bot.tree.command(name="add-achievement", description="Add achievement / إضافة إنجاز")
-@app_commands.checks.cooldown(1, 5.0)
-async def add_achievement(i: discord.Interaction, name: str, description: str, required_points: int, reward_points: int, role: Optional[discord.Role] = None):
-    if not await gate(i, "add-achievement", editor=True): return
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO achievements(guild_id, name, description, required_points, reward_points, role_id) VALUES(?,?,?,?,?,?)", (i.guild.id, name, description, required_points, reward_points, role.id if role else None))
-        await db.commit()
-    await i.response.send_message(f"✅ Added achievement **{name}**.", ephemeral=True)
-
-@bot.tree.command(name="achievements", description="View achievements / عرض الإنجازات")
-@app_commands.checks.cooldown(1, 5.0)
-async def achievements_cmd(i: discord.Interaction):
-    if not await gate(i, "achievements"): return
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT name, description, required_points FROM achievements WHERE guild_id=?", (i.guild.id,))
-        items = await cur.fetchall()
-    if not items: return await i.response.send_message("⚠️ No achievements yet.", ephemeral=True)
-    desc = "".join(f"🏅 **{name}** ({req} pts)\n┗ {d}\n\n" for name, d, req in items)
-    embed = await get_custom_msg(i.guild.id, "achieve_list_msg", "🏆 Achievements / الإنجازات", desc, discord.Color.purple())
-    await i.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="claim-achievement", description="Claim achievement / استلام إنجاز")
-@app_commands.checks.cooldown(1, 10.0)
-async def claim_achievement(i: discord.Interaction):
-    if not await gate(i, "claim-achievement"): return
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("BEGIN IMMEDIATE")
-        try:
-            cur = await db.execute("SELECT a.id, a.name, a.reward_points, a.role_id FROM user_achievements ua JOIN achievements a ON a.id = ua.achievement_id WHERE ua.guild_id=? AND ua.user_id=? AND ua.claimed=0 LIMIT 1", (i.guild.id, i.user.id))
-            row = await cur.fetchone()
-            if not row:
-                await db.rollback()
-                return await i.response.send_message(tr("achieve_already_claimed"), ephemeral=True)
-            ach_id, name, reward_pts, reward_role = row
-            cur = await db.execute("UPDATE user_achievements SET claimed=1 WHERE guild_id=? AND user_id=? AND achievement_id=? AND claimed=0", (i.guild.id, i.user.id, ach_id))
-            if cur.rowcount == 0:
-                await db.rollback()
-                return await i.response.send_message(tr("achieve_already_claimed"), ephemeral=True)
-            if reward_pts > 0:
-                await db.execute("INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET points = points + ?", (i.guild.id, i.user.id, reward_pts, reward_pts))
-                await db.execute("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, i.user.id, reward_pts, now_utc().isoformat(), "achievement", await get_current_season(i.guild.id)))
-            await db.commit()
-        except Exception as e:
-            await db.rollback()
-            return await i.response.send_message(tr("db_err"), ephemeral=True)
-    if reward_role:
-        role = i.guild.get_role(reward_role)
-        if role:
-            try: await i.user.add_roles(role, reason="Achievement Reward")
-            except discord.Forbidden: pass
-    await i.response.send_message(tr("achieve_claimed", name=name), ephemeral=True)
-
-@bot.tree.command(name="add-quest", description="Add daily quest / إضافة مهمة")
-@app_commands.checks.cooldown(1, 5.0)
-async def add_quest(i: discord.Interaction, description: str, reward_points: int, role: Optional[discord.Role] = None):
-    if not await gate(i, "add-quest", editor=True): return
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO quests(guild_id, description, target_type, target_amount, reward_points, role_id, is_auto) VALUES(?,?,?,?,?,?,0)", (i.guild.id, description, "log", 1, reward_points, role.id if role else None))
-        await db.commit()
-    await i.response.send_message(f"✅ Added quest: {description}.", ephemeral=True)
-
-@bot.tree.command(name="quests", description="View daily quests / عرض المهام")
-@app_commands.checks.cooldown(1, 5.0)
-async def quests_cmd(i: discord.Interaction):
-    if not await gate(i, "quests"): return
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT id, description, reward_points FROM quests WHERE guild_id=?", (i.guild.id,))
-        items = await cur.fetchall()
-    if not items: return await i.response.send_message("⚠️ No quests yet.", ephemeral=True)
-    desc = "".join(f"📜 {d} — Reward: {r} pts\n" for _id, d, r in items)
-    embed = await get_custom_msg(i.guild.id, "quest_msg", tr("quest_title"), desc, discord.Color.green())
-    await i.response.send_message(embed=embed, ephemeral=True)
-
+# ================================================================ الفعاليات والتصويت (Events & Vote)
 class EventView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="✅", style=discord.ButtonStyle.success, custom_id="event_join")
@@ -3016,100 +2561,10 @@ class VoteModal(discord.ui.Modal, title="التصويت / Voting"):
 async def start_vote(i: discord.Interaction, reason: str = "أفضل لاعب هذا الأسبوع"):
     if not await gate(i, "start-vote", editor=True): return
     embed = discord.Embed(title="🏆 Voting / تصويت", description=f"**{reason}**\n\nWho is the best player?", color=discord.Color.blue())
-    msg = await i.channel.send(embed=embed, view=VoteView())
+    await i.channel.send(embed=embed, view=VoteView())
     await i.response.send_message("✅ Voting started.", ephemeral=True)
 
-@bot.tree.command(name="h2h", description="Head-to-head stats / مواجهات مباشرة")
-@app_commands.checks.cooldown(1, 5.0)
-async def h2h_cmd(i: discord.Interaction, member1: discord.Member, member2: discord.Member):
-    if not await gate(i, "h2h"): return
-    await i.response.defer()
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT author_id, result, data FROM logs WHERE guild_id=? AND type='1v1' AND status='accepted'", (i.guild.id,))
-        rows = await cur.fetchall()
-    m1_wins, m2_wins = 0, 0
-    for author_id, result, data_str in rows:
-        data = json.loads(data_str or "{}")
-        opp_text, fighter_text = str(data.get("opponent", "")), str(data.get("my_fighter", ""))
-        m1_name, m2_name = member1.display_name.lower(), member2.display_name.lower()
-        m1_username, m2_username = member1.name.lower(), member2.name.lower()
-        is_m1_fighting, is_m2_fighting = m1_name in fighter_text.lower() or m1_username in fighter_text.lower(), m2_name in fighter_text.lower() or m2_username in fighter_text.lower()
-        is_m1_opp, is_m2_opp = m1_name in opp_text.lower() or m1_username in opp_text.lower(), m2_name in opp_text.lower() or m2_username in opp_text.lower()
-        if author_id == member1.id and is_m2_opp:
-            if result == "win": m1_wins += 1
-            elif result == "loss": m2_wins += 1
-        elif author_id == member2.id and is_m1_opp:
-            if result == "win": m2_wins += 1
-            elif result == "loss": m1_wins += 1
-    e = discord.Embed(title="⚔️ Head-to-Head", color=discord.Color.red())
-    e.add_field(name=member1.display_name, value=f"{m1_wins} Wins")
-    e.add_field(name=member2.display_name, value=f"{m2_wins} Wins")
-    await i.followup.send(embed=e)
-
-@bot.tree.command(name="set-lfg-roles", description="Set LFG roles / رتب البحث عن فريق")
-@app_commands.checks.cooldown(1, 5.0)
-async def set_lfg_roles(i: discord.Interaction, role: discord.Role):
-    if not await gate(i, "set-lfg-roles", editor=True): return
-    if role.permissions.administrator or role.name.lower() in ("@everyone", "new member", "admin", "moderator"):
-        return await i.response.send_message("❌ Cannot use this role.", ephemeral=True)
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT OR IGNORE INTO lfg_allowed_roles(guild_id, role_id) VALUES(?,?)", (i.guild.id, role.id))
-        await db.commit()
-    await i.response.send_message(f"✅ Allowed role {role.mention} for LFG.", ephemeral=True)
-
-async def lfg_role_autocomplete(i: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT role_id FROM lfg_allowed_roles WHERE guild_id=?", (i.guild.id,))
-        role_ids = [r[0] for r in await cur.fetchall()]
-    roles = [i.guild.get_role(rid) for rid in role_ids if i.guild.get_role(rid)]
-    return [app_commands.Choice(name=r.name, value=str(r.id)) for r in roles if current.lower() in r.name.lower()][:25]
-
-@bot.tree.command(name="lfg", description="Looking for group / البحث عن فريق")
-@app_commands.checks.cooldown(1, 300.0)
-@app_commands.choices(mode=[app_commands.Choice(name="Channel", value="channel"), app_commands.Choice(name="DM", value="dm")])
-@app_commands.autocomplete(target_role=lfg_role_autocomplete)
-async def lfg_cmd(i: discord.Interaction, mode: app_commands.Choice[str], target_role: str, note: str = "Looking for a team!"):
-    if not await gate(i, "lfg"): return
-    if mode.value == "dm" and not await is_editor(i.user):
-        return await i.response.send_message("❌ DM broadcasting is for staff only.", ephemeral=True)
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT 1 FROM lfg_allowed_roles WHERE guild_id=? AND role_id=?", (i.guild.id, int(target_role)))
-        if not await cur.fetchone(): return await i.response.send_message("❌ This role is not allowed for LFG.", ephemeral=True)
-    role = i.guild.get_role(int(target_role))
-    if not role: return await i.response.send_message("❌ Role not found.", ephemeral=True)
-    embed = discord.Embed(title="🔍 Looking for Group", description=f"**{note}**\n\nFrom: {i.user.mention}", color=discord.Color.blue())
-    if mode.value == "channel":
-        await i.channel.send(content=role.mention, embed=embed)
-        await i.response.send_message("✅ Sent to channel.", ephemeral=True)
-    else:
-        await i.response.defer(ephemeral=True)
-        await _ensure_members(i.guild)
-        count, failed = 0, 0
-        members_to_notify = [m for m in role.members if not m.bot and m.id != i.user.id][:200]
-        for member in members_to_notify:
-            try:
-                await member.send(embed=embed)
-                count += 1
-            except discord.HTTPException: failed += 1
-            await asyncio.sleep(1.0)
-        await i.followup.send(f"✅ Sent to {count} members. (Failed: {failed})", ephemeral=True)
-
-@bot.tree.command(name="daily", description="Claim daily bonus / المكافأة اليومية")
-@app_commands.checks.cooldown(1, 10.0)
-async def daily_cmd(i: discord.Interaction):
-    if not await gate(i, "daily"): return
-    today = now_utc().date().isoformat()
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT last_claimed FROM daily_bonus WHERE guild_id=? AND user_id=?", (i.guild.id, i.user.id))
-        row = await cur.fetchone()
-        if row and row[0] == today: return await i.response.send_message("❌ You already claimed your daily bonus today!", ephemeral=True)
-        reward = int(await get_custom_val(i.guild.id, "daily_reward_points", 10))
-        await db.execute("INSERT INTO daily_bonus(guild_id, user_id, last_claimed) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET last_claimed=excluded.last_claimed", (i.guild.id, i.user.id, today))
-        await db.execute("INSERT INTO members(guild_id, user_id, points) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET points = points + ?", (i.guild.id, i.user.id, reward, reward))
-        await db.execute("INSERT INTO point_events(guild_id, user_id, points, created_at, type, season_id) VALUES(?,?,?,?,?,?)", (i.guild.id, i.user.id, reward, now_utc().isoformat(), "daily", await get_current_season(i.guild.id)))
-        await db.commit()
-    await i.response.send_message(f"✅ You claimed **{reward} points**!", ephemeral=True)
-
+# ================================================================ التذاكر (Tickets)
 class TicketView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Open Ticket / فتح تذكرة", style=discord.ButtonStyle.primary, emoji="🎫", custom_id="ticket_open")
@@ -3158,6 +2613,56 @@ async def setup_tickets(i: discord.Interaction):
     await i.channel.send(embed=embed, view=TicketView())
     await i.response.send_message("✅ Setup complete.", ephemeral=True)
 
+# ================================================================ الغرف الصوتية (Temp Voice)
+@bot.tree.command(name="create-temp-voice", description="Create temp voice / غرفة صوتية مؤقتة")
+@app_commands.checks.cooldown(1, 60.0)
+async def create_temp_voice(i: discord.Interaction, name: Optional[str] = None):
+    if not await gate(i, "create-temp-voice"): return
+    await i.response.defer(ephemeral=True)
+    guild = i.guild
+    channel_name = name or f"🔊 Room: {i.user.display_name}"
+    overwrites = {guild.default_role: discord.PermissionOverwrite(connect=True), i.user: discord.PermissionOverwrite(manage_channels=True, connect=True)}
+    try:
+        channel = await guild.create_voice_channel(name=channel_name[:100], overwrites=overwrites)
+        await i.followup.send(f"✅ Temp voice created: {channel.mention}", ephemeral=True)
+    except discord.Forbidden: await i.followup.send("❌ No permission to create voice channels.", ephemeral=True)
+
+@bot.tree.command(name="set-temp-voice", description="Set temp voice trigger / قناة الغرف المؤقتة")
+@app_commands.checks.cooldown(1, 5.0)
+async def set_temp_voice(i: discord.Interaction, channel: discord.VoiceChannel):
+    if not await gate(i, "set-temp-voice", editor=True): return
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("INSERT INTO custom_settings(guild_id, key, value) VALUES(?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value", (i.guild.id, "temp_voice_trigger", str(channel.id)))
+        await db.commit()
+    await i.response.send_message(f"✅ Set {channel.mention} as trigger.", ephemeral=True)
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member.bot: return
+    guild = member.guild
+    if after.channel:
+        trigger_id = await get_custom_val(guild.id, "temp_voice_trigger", "0")
+        if str(after.channel.id) == trigger_id:
+            try:
+                new_ch = await guild.create_voice_channel(name=f"🔊 Room: {member.display_name}", category=after.channel.category)
+                async with aiosqlite.connect(DB) as db:
+                    await db.execute("INSERT INTO temp_voice_rooms(guild_id,channel_id,owner_id,created_at) VALUES(?,?,?,?)", (guild.id, new_ch.id, member.id, now_utc().isoformat()))
+                    await db.commit()
+                await new_ch.set_permissions(member, connect=True, manage_channels=True)
+                await member.move_to(new_ch)
+            except discord.HTTPException: pass
+    if before.channel and before.channel != after.channel:
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute("SELECT channel_id FROM temp_voice_rooms WHERE guild_id=? AND channel_id=?", (guild.id, before.channel.id))
+            managed = await cur.fetchone()
+        if managed and len(before.channel.members) == 0:
+            try: await before.channel.delete(reason="Temp voice empty")
+            except discord.HTTPException: return
+            async with aiosqlite.connect(DB) as db:
+                await db.execute("DELETE FROM temp_voice_rooms WHERE guild_id=? AND channel_id=?", (guild.id, before.channel.id))
+                await db.commit()
+
+# ================================================================ أدوات إضافية (Purge, Embed, Custom Roles)
 @bot.tree.command(name="purge", description="Purge messages / مسح رسائل")
 @app_commands.checks.cooldown(1, 10.0)
 async def purge_cmd(i: discord.Interaction, amount: app_commands.Range[int, 1, 100], member: Optional[discord.Member] = None):
@@ -3231,64 +2736,6 @@ async def create_custom_role(i: discord.Interaction, name: app_commands.Range[st
         except Exception: pass
         return await i.response.send_message("❌ Role assignment failed; refunded.", ephemeral=True)
     await i.response.send_message(tr("role_created_free" if is_free else "role_created", role=role.mention, member=i.user.mention), ephemeral=True)
-
-@bot.tree.command(name="create-temp-voice", description="Create temp voice / غرفة صوتية مؤقتة")
-@app_commands.checks.cooldown(1, 60.0)
-async def create_temp_voice(i: discord.Interaction, name: Optional[str] = None):
-    if not await gate(i, "create-temp-voice"): return
-    await i.response.defer(ephemeral=True)
-    guild = i.guild
-    channel_name = name or f"🔊 Room: {i.user.display_name}"
-    overwrites = {guild.default_role: discord.PermissionOverwrite(connect=True), i.user: discord.PermissionOverwrite(manage_channels=True, connect=True)}
-    try:
-        channel = await guild.create_voice_channel(name=channel_name[:100], overwrites=overwrites)
-        await i.followup.send(f"✅ Temp voice created: {channel.mention}", ephemeral=True)
-    except discord.Forbidden: await i.followup.send("❌ No permission to create voice channels.", ephemeral=True)
-
-@bot.tree.command(name="set-top-rewards", description="Set weekly top 3 rewards / جوائز المتصدرين")
-@app_commands.checks.cooldown(1, 5.0)
-async def set_top_rewards(i: discord.Interaction, rank: app_commands.Range[int, 1, 3], points: int, role: Optional[discord.Role] = None):
-    if not await gate(i, "set-top-rewards", editor=True): return
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO custom_settings(guild_id, key, value) VALUES(?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value", (i.guild.id, f"top{rank}_reward_points", str(points)))
-        if role: await db.execute("INSERT INTO custom_settings(guild_id, key, value) VALUES(?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value", (i.guild.id, f"top{rank}_reward_role", str(role.id)))
-        await db.commit()
-    await i.response.send_message(f"✅ Rank {rank} reward: {points} pts" + (f" and {role.mention}" if role else ""), ephemeral=True)
-
-@bot.tree.command(name="set-temp-voice", description="Set temp voice trigger / قناة الغرف المؤقتة")
-@app_commands.checks.cooldown(1, 5.0)
-async def set_temp_voice(i: discord.Interaction, channel: discord.VoiceChannel):
-    if not await gate(i, "set-temp-voice", editor=True): return
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO custom_settings(guild_id, key, value) VALUES(?,?,?) ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value", (i.guild.id, "temp_voice_trigger", str(channel.id)))
-        await db.commit()
-    await i.response.send_message(f"✅ Set {channel.mention} as trigger.", ephemeral=True)
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if member.bot: return
-    guild = member.guild
-    if after.channel:
-        trigger_id = await get_custom_val(guild.id, "temp_voice_trigger", "0")
-        if str(after.channel.id) == trigger_id:
-            try:
-                new_ch = await guild.create_voice_channel(name=f"🔊 Room: {member.display_name}", category=after.channel.category)
-                async with aiosqlite.connect(DB) as db:
-                    await db.execute("INSERT INTO temp_voice_rooms(guild_id,channel_id,owner_id,created_at) VALUES(?,?,?,?)", (guild.id, new_ch.id, member.id, now_utc().isoformat()))
-                    await db.commit()
-                await new_ch.set_permissions(member, connect=True, manage_channels=True)
-                await member.move_to(new_ch)
-            except discord.HTTPException: pass
-    if before.channel and before.channel != after.channel:
-        async with aiosqlite.connect(DB) as db:
-            cur = await db.execute("SELECT channel_id FROM temp_voice_rooms WHERE guild_id=? AND channel_id=?", (guild.id, before.channel.id))
-            managed = await cur.fetchone()
-        if managed and len(before.channel.members) == 0:
-            try: await before.channel.delete(reason="Temp voice empty")
-            except discord.HTTPException: return
-            async with aiosqlite.connect(DB) as db:
-                await db.execute("DELETE FROM temp_voice_rooms WHERE guild_id=? AND channel_id=?", (guild.id, before.channel.id))
-                await db.commit()
 
 # ================================================================ المهام التلقائية (Background Tasks)
 async def fix_db_columns():
@@ -3441,3 +2888,4 @@ if __name__ == "__main__":
     if not token:
         raise RuntimeError("❌ DISCORD_TOKEN is missing in environment variables.")
     bot.run(token)
+    
