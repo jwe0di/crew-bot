@@ -1050,41 +1050,42 @@ async def _run_ai(ctx, text, image_url=None):
         cur = await db.execute("SELECT history FROM ai_memory WHERE guild_id=? AND user_id=?", (ctx.guild.id, ctx.user.id))
         row = await cur.fetchone()
         
-    history = json.loads(row[0]) if row else [{"role": "system", "content": _build_system_prompt(lang, ctx.can_use_tools)}]
+    system_prompt = f"You are DragonSlayerBot AI. Reply in {LANG_NAMES.get(lang, 'English')}. Keep replies short. CRITICAL: Never use tools in a loop. If a tool fails or gives no answer, reply to the user with text immediately."
+    history = json.loads(row[0]) if row else [{"role": "system", "content": system_prompt}]
     
-    if not any(lang in str(h.get("content", "")) for h in history if h["role"] == "system"): 
-        history = [{"role": "system", "content": _build_system_prompt(lang, ctx.can_use_tools)}]
-        
     history.append({"role": "user", "content": text})
+    if len(history) > 20: history = [history[0]] + history[-18:]
     
-    if len(history) > 20: 
-        history = [history[0]] + history[-18:]
-        
-    for _ in range(4):
+    # زودنا عدد المحاولات لـ 6 عشان ميزنقش بسرعة
+    for _ in range(6):
         res = await _ai_call(history, image_url, bool(image_url))
-        if "error" in res: 
-            return f"❌ **AI Error:**\n```\n{res['error']}\n```"
-            
-        msg, tcs = res["message"], res["message"].get("tool_calls") or []
+        if "error" in res: return f"❌ **AI Error:**\n```\n{res['error']}\n```"
+        
+        msg = res["message"]
+        tcs = msg.get("tool_calls") or []
         
         if not tcs:
             history.append({"role": "assistant", "content": msg.get("content", "")})
             async with aiosqlite.connect(DB) as db:
                 await db.execute("INSERT INTO ai_memory(guild_id, user_id, history) VALUES(?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE SET history=excluded.history", (ctx.guild.id, ctx.user.id, json.dumps(history, ensure_ascii=False)))
                 await db.commit()
-            return msg.get("content", "") or "(no reply)"
+            return msg.get("content", "") or "تم تنفيذ طلبك."
             
         history.append({"role": "assistant", "content": msg.get("content", ""), "tool_calls": tcs})
-        
         for tc in tcs:
             fn = tc["function"]
             try: 
                 args = json.loads(fn.get("arguments") or "{}")
             except: 
                 args = {}
-            history.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": (await _exec_ai_tool(ctx, fn["name"], args))[:1900]})
+            out = await _exec_ai_tool(ctx, fn["name"], args)
+            history.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": out[:1900]})
             
-    return "⚠️ Tool loop stopped."
+    # لو وصل لآخر المحاولات ولسه بيلف، نجبره يرد رد نهائي بدون أدوات
+    history.append({"role": "user", "content": "Please stop using tools and answer my question now in text."})
+    final_res = await _ai_call(history, is_vision=False)
+    final_text = final_res.get("message", {}).get("content", "⚠️ عذراً، واجهت مشكلة في جلب المعلومات. جرب تسألني بطريقة تانية.")
+    return final_text
 
 @bot.event
 async def on_message(message):
