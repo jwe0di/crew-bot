@@ -1518,11 +1518,11 @@ class ReviewView(discord.ui.View):
     async def on_error(self, interaction, error, item):
         await report_error(interaction, error)
         
-@discord.ui.button(label="Accept / قبول", emoji="✅", style=discord.ButtonStyle.success, custom_id="log:accept")
+    @discord.ui.button(label="Accept / قبول", emoji="✅", style=discord.ButtonStyle.success, custom_id="log:accept")
     async def accept(self, i: discord.Interaction, button: discord.ui.Button):
         await accept_log(i)
         
-@discord.ui.button(label="Reject / رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id="log:reject")
+    @discord.ui.button(label="Reject / رفض", emoji="❌", style=discord.ButtonStyle.danger, custom_id="log:reject")
     async def reject(self, i: discord.Interaction, button: discord.ui.Button):
         row = await resolve_log(i)
         if not row:
@@ -1533,7 +1533,7 @@ class ReviewView(discord.ui.View):
             return await i.response.send_message(tr("no_self_review"), ephemeral=True)
         await i.response.send_modal(RejectModal(row["id"], i.message))
         
-@discord.ui.button(label="Confirm Participation / تأكيد المشاركة", emoji="✋", style=discord.ButtonStyle.primary, custom_id="log:confirm_part")
+    @discord.ui.button(label="Confirm Participation / تأكيد المشاركة", emoji="✋", style=discord.ButtonStyle.primary, custom_id="log:confirm_part")
     async def confirm_part(self, i: discord.Interaction, button: discord.ui.Button):
         row = await resolve_log(i)
         if not row:
@@ -1594,12 +1594,12 @@ class PendingPaginator(discord.ui.View):
     async def interaction_check(self, i: discord.Interaction) -> bool:
         return i.user.id == self.owner_user_id
         
-@discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
     async def prev(self, i: discord.Interaction, button: discord.ui.Button):
         self.page = max(0, self.page - 1)
         await i.response.edit_message(content=self.get_page_text()[:1990], view=self)
         
-@discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
     async def next(self, i: discord.Interaction, button: discord.ui.Button):
         self.page = min(self.max_pages() - 1, self.page + 1)
         await i.response.edit_message(content=self.get_page_text()[:1990], view=self)
@@ -2348,11 +2348,11 @@ class ShopPaginator(discord.ui.View):
         embed.set_footer(text=tr("browse_page", page=self.page + 1, pages=self.max_pages()))
         return embed
     async def interaction_check(self, i: discord.Interaction) -> bool: return i.user.id == self.requester_id
-@discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
     async def prev(self, i: discord.Interaction, button: discord.ui.Button):
         self.page = max(0, self.page - 1)
         await i.response.edit_message(embed=self.get_embed(), view=self)
-@discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def next(self, i: discord.Interaction, button: discord.ui.Button):
         self.page = min(self.max_pages() - 1, self.page + 1)
         await i.response.edit_message(embed=self.get_embed(), view=self)
@@ -2510,7 +2510,7 @@ async def quests_cmd(i: discord.Interaction):
 
 class EventView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
-@discord.ui.button(label="✅", style=discord.ButtonStyle.success, custom_id="event_join")
+    @discord.ui.button(label="✅", style=discord.ButtonStyle.success, custom_id="event_join")
     async def join(self, i: discord.Interaction, button: discord.ui.Button):
         async with aiosqlite.connect(DB) as db:
             cur = await db.execute("SELECT attendees FROM events WHERE message_id=?", (i.message.id,))
@@ -2522,7 +2522,7 @@ class EventView(discord.ui.View):
                     await db.execute("UPDATE events SET attendees=? WHERE message_id=?", (json.dumps(attendees), i.message.id))
                     await db.commit()
         await i.response.send_message(tr("event_joined"), ephemeral=True)
-@discord.ui.button(label="❌", style=discord.ButtonStyle.danger, custom_id="event_leave")
+    @discord.ui.button(label="❌", style=discord.ButtonStyle.danger, custom_id="event_leave")
     async def leave(self, i: discord.Interaction, button: discord.ui.Button):
         async with aiosqlite.connect(DB) as db:
             cur = await db.execute("SELECT attendees FROM events WHERE message_id=?", (i.message.id,))
@@ -2550,7 +2550,7 @@ async def event_cmd(i: discord.Interaction, title: str, time_str: str):
 
 class VoteView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
-@discord.ui.button(label="صوت / Vote", style=discord.ButtonStyle.primary, custom_id="vote_btn")
+    @discord.ui.button(label="صوت / Vote", style=discord.ButtonStyle.primary, custom_id="vote_btn")
     async def vote(self, i: discord.Interaction, button: discord.ui.Button):
         await i.response.send_modal(VoteModal(i.message.id))
 
@@ -2703,7 +2703,7 @@ async def daily_cmd(i: discord.Interaction):
 
 class TicketView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
-@discord.ui.button(label="Open Ticket / فتح تذكرة", style=discord.ButtonStyle.primary, emoji="🎫", custom_id="ticket_open")
+    @discord.ui.button(label="Open Ticket / فتح تذكرة", style=discord.ButtonStyle.primary, emoji="🎫", custom_id="ticket_open")
     async def open_ticket(self, i: discord.Interaction, button: discord.ui.Button):
         await i.response.defer(ephemeral=True)
         guild = i.guild
@@ -2730,7 +2730,7 @@ class TicketView(discord.ui.View):
 
 class CloseTicketView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
-@discord.ui.button(label="Close Ticket / إغلاق", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
+    @discord.ui.button(label="Close Ticket / إغلاق", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
     async def close_ticket(self, i: discord.Interaction, button: discord.ui.Button):
         await i.response.send_message("🔒 Closing ticket and generating transcript... / جاري الإغلاق وحفظ المحادثة...", ephemeral=True)
         
