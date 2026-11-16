@@ -1,4 +1,3 @@
-# إعدادات اختيارية. bot.py بيشتغل حتى لو ناقص منها أي حاجة (بياخد قيم افتراضية).
 # الأفضل تحط OWNER_ID و DISCORD_TOKEN في Railway Variables.
 OWNER_ID = 0
 
