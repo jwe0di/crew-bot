@@ -23,7 +23,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-import config
+import configs as config
 
 load_dotenv()
 
