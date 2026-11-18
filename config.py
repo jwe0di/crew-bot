@@ -1,4 +1,4 @@
-# الأفضل تحط OWNER_ID و DISCORD_TOKEN في Railway Variables.
+# الأفضل تحط OWNER_ID و DISCORD_TOKEN في Railway Variables.# الأفضل تحط OWNER_ID و DISCORD_TOKEN في Railway Variables.
 OWNER_ID = 0
 
 EDITOR_ROLES = ["The Admiral", "Empyrean Monarch", "Commander"]
