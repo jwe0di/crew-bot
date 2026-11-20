@@ -11,6 +11,7 @@ import re
 import sqlite3
 import tempfile
 import threading
+import traceback
 import uuid
 from datetime import timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -935,6 +936,7 @@ class CrewBot(discord.Client):
                     except Exception as cleanup_exc:
                         print(f"⚠️ Plugin rollback failed ({module_name}): {type(cleanup_exc).__name__}")
             print(f"❌ Plugin load failed ({module_name}): {type(exc).__name__}: {exc}")
+            traceback.print_exc()
             return False
 
     async def setup_hook(self):
