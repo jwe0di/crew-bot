@@ -6737,7 +6737,10 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
     limit_text = "⚠️ وصلت للحد الأقصى لخطوات الأدوات في الطلب الواحد. قسّم الطلب لخطوات أصغر."
     approval_result = await _ai_submit_deferred_approvals(ctx)
     if approval_result:
-        limit_text += "\n\n" + approval_result
+        if approval_result.startswith("DENIED:"):
+            limit_text = "❌ لم يتم إرسال طلب الموافقة، ولم يتم تنفيذ أي إجراء.\n" + approval_result
+        else:
+            limit_text += "\n\n" + approval_result
     return limit_text[:AI_MAX_REPLY_CHARS]
 
 AI_MAX_REQUESTS_PER_MINUTE = 5
