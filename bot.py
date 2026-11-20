@@ -22,7 +22,7 @@ import aiohttp
 import aiosqlite
 import discord
 from discord import app_commands
-from discord.ext import tasks
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 import config
@@ -892,13 +892,15 @@ async def admin_analytics_ai(prompt: str) -> str | None:
     return None
 
 
-class CrewBot(discord.Client):
+class CrewBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
+        # commands.Bot supplies add_listener(), add_view(), and its app-command tree.
+        # The project uses application commands only, so a mention/! prefix is inert
+        # unless a prefix command is explicitly added in the future.
+        super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self._ready_once = False
         self._legacy_adoption_done = False
         self.loaded_plugins = set()
