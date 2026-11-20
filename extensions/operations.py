@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import os
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aiosqlite
@@ -110,9 +111,6 @@ def _day() -> str:
 
 def _is_admin(member: discord.Member) -> bool:
     return bool(member.guild_permissions.administrator or member.guild_permissions.manage_guild)
-
-
-from contextlib import asynccontextmanager
 
 
 @asynccontextmanager
