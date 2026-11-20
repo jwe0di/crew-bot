@@ -1,1 +1,1 @@
-"""DragonSlayerBot extensions package."""
+"""Shared core services for DragonSlayerBot."""
