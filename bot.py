@@ -5700,8 +5700,16 @@ async def _ai_approval_recipients(guild):
         return {}
     try:
         user = bot.get_user(bot_owner_id) or await bot.fetch_user(bot_owner_id)
-        return {bot_owner_id: user} if user else {}
-    except (discord.HTTPException, discord.NotFound):
+        if user is None:
+            print(f"❌ AI approval recipient lookup returned no user (configured OWNER_ID={bot_owner_id}).")
+            return {}
+        return {bot_owner_id: user}
+    except (discord.HTTPException, discord.NotFound) as exc:
+        print(
+            "❌ AI approval recipient lookup failed: "
+            f"configured_owner_id={bot_owner_id}; error={type(exc).__name__}; "
+            f"status={getattr(exc, 'status', 'n/a')}; code={getattr(exc, 'code', 'n/a')}"
+        )
         return {}
 
 
@@ -5759,19 +5767,56 @@ async def _queue_ai_action(ctx, name, args):
     embed.add_field(name="التفاصيل", value=f"```\n{preview[:900]}\n```", inline=False)
     embed.add_field(name="المهلة", value="5 دقائق", inline=False)
     delivered = 0
-    for recipient in recipients.values():
+    delivery_errors = []
+    delivered_to = []
+    for recipient_id, recipient in recipients.items():
         view = AIActionConfirmationView(ctx.guild.id, ctx.user.id, token, recipients.keys())
         try:
             sent = await recipient.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
             view.message = sent
             delivered += 1
-        except (discord.Forbidden, discord.HTTPException):
+            delivered_to.append(f"{recipient.name} ({recipient_id})")
+            print(
+                "✅ AI approval DM delivered: "
+                f"guild_id={ctx.guild.id}; requester_id={ctx.user.id}; "
+                f"recipient_id={recipient_id}; message_id={sent.id}; "
+                f"action={name}; batch_size={len(args.get('actions', [])) if name == 'batch_action' else 1}"
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
             view.stop()
+            error = (
+                f"{type(exc).__name__}(status={getattr(exc, 'status', 'n/a')}, "
+                f"code={getattr(exc, 'code', 'n/a')})"
+            )
+            delivery_errors.append(error)
+            print(
+                "❌ AI approval DM delivery failed: "
+                f"guild_id={ctx.guild.id}; requester_id={ctx.user.id}; "
+                f"recipient_id={recipient_id}; action={name}; error={error}"
+            )
+        except Exception as exc:
+            view.stop()
+            error = type(exc).__name__
+            delivery_errors.append(error)
+            print(
+                "❌ Unexpected AI approval DM error: "
+                f"guild_id={ctx.guild.id}; requester_id={ctx.user.id}; "
+                f"recipient_id={recipient_id}; action={name}; error={error}"
+            )
     if delivered == 0:
         await _ai_cancel_pending_action(ctx.guild.id, ctx.user.id, token)
-        return "DENIED: تعذر إرسال طلب الموافقة لأي مستلم. لم يتم تنفيذ أي إجراء. فعّل استقبال الرسائل الخاصة للموافقين."
+        details = ", ".join(delivery_errors) or "recipient lookup failed"
+        return (
+            "DENIED: تعذر تأكيد تسليم رسالة الموافقة إلى مالك البوت "
+            f"({details}). تم إلغاء الطلب ولم يتم تنفيذ أي إجراء. "
+            "تحقق من OWNER_ID وإعدادات الرسائل الخاصة."
+        )
     ctx.pending_confirmations.append(name)
-    return f"OWNER APPROVAL REQUIRED: `{name}` إجراء عالي التأثير ولم يتم تنفيذه. أُرسل طلب الموافقة لمالك البوت في الخاص؛ الموافقة أو الرفض من الأزرار فقط، دون أكواد أو أوامر تأكيد. ينتهي الطلب بعد 5 دقائق."
+    return (
+        f"OWNER APPROVAL REQUIRED: `{name}` لم يُنفّذ بعد. "
+        f"تم تسليم رسالة الموافقة بنجاح إلى: {', '.join(delivered_to)}. "
+        "الموافقة أو الرفض من الأزرار فقط، وينتهي الطلب بعد 5 دقائق."
+    )
 
 async def _ai_submit_deferred_approvals(ctx):
     actions = list(getattr(ctx, "deferred_owner_actions", []) or [])
@@ -6652,7 +6697,11 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
             answer = str(message.get("content") or "حصل اتصال بالموديل لكن الرد رجع فاضي. جرّبت قائمة الموديلات المتاحة، ومفيش رد نصي أو أدوات في الاستجابة دي. راجع إعدادات مزود AI وسجلاته، أو جرّب طلبًا أقصر.").strip()
             approval_result = await _ai_submit_deferred_approvals(ctx)
             if approval_result:
-                answer += "\n\n" + approval_result
+                if approval_result.startswith("DENIED:"):
+                    # A failed delivery/approval result overrides any model claim.
+                    answer = "❌ لم يتم إرسال طلب الموافقة، ولم يتم تنفيذ أي إجراء.\n" + approval_result
+                else:
+                    answer += "\n\n" + approval_result
             answer = answer[:AI_MAX_REPLY_CHARS]
             history.append({"role": "assistant", "content": answer})
             # Do not persist raw attachment contents in long-term AI conversation memory.
@@ -6688,7 +6737,10 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
     limit_text = "⚠️ وصلت للحد الأقصى لخطوات الأدوات في الطلب الواحد. قسّم الطلب لخطوات أصغر."
     approval_result = await _ai_submit_deferred_approvals(ctx)
     if approval_result:
-        limit_text += "\n\n" + approval_result
+        if approval_result.startswith("DENIED:"):
+            limit_text = "❌ لم يتم إرسال طلب الموافقة، ولم يتم تنفيذ أي إجراء.\n" + approval_result
+        else:
+            limit_text += "\n\n" + approval_result
     return limit_text[:AI_MAX_REPLY_CHARS]
 
 AI_MAX_REQUESTS_PER_MINUTE = 5
