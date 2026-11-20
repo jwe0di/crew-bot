@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import os
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aiosqlite
@@ -112,14 +113,16 @@ def _is_admin(member: discord.Member) -> bool:
     return bool(member.guild_permissions.administrator or member.guild_permissions.manage_guild)
 
 
+@asynccontextmanager
 async def _db():
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    return db
+    """Open one SQLite connection and close it when the context exits."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        yield db
 
 
 async def _setting(guild_id: int, key: str, default: str) -> str:
-    async with await _db() as db:
+    async with _db() as db:
         cur = await db.execute(
             "SELECT value FROM ops_settings WHERE guild_id=? AND key=?",
             (guild_id, key),
@@ -129,7 +132,7 @@ async def _setting(guild_id: int, key: str, default: str) -> str:
 
 
 async def _set_setting(guild_id: int, key: str, value: str) -> None:
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute(
             "INSERT INTO ops_settings(guild_id,key,value) VALUES(?,?,?) "
             "ON CONFLICT(guild_id,key) DO UPDATE SET value=excluded.value",
@@ -141,7 +144,7 @@ async def _set_setting(guild_id: int, key: str, value: str) -> None:
 async def _incident(guild_id: int, event_type: str, summary: str,
                     actor_id: int | None = None, target_id: int | None = None,
                     details: dict[str, Any] | None = None) -> None:
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute(
             "INSERT INTO ops_incidents(guild_id,event_type,actor_id,target_id,summary,details,created_at) "
             "VALUES(?,?,?,?,?,?,?)",
@@ -155,7 +158,7 @@ async def _daily(guild_id: int, field: str, amount: int = 1) -> None:
     allowed = {"message_count", "join_count", "leave_count"}
     if field not in allowed:
         return
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute(
             f"INSERT INTO ops_activity_daily(guild_id,day,{field}) VALUES(?,?,?) "
             f"ON CONFLICT(guild_id,day) DO UPDATE SET {field}={field}+excluded.{field}",
@@ -165,7 +168,7 @@ async def _daily(guild_id: int, field: str, amount: int = 1) -> None:
 
 
 async def _mark_active(guild_id: int, user_id: int) -> None:
-    async with await _db() as db:
+    async with _db() as db:
         cur = await db.execute(
             "INSERT OR IGNORE INTO ops_activity_users(guild_id,day,user_id) VALUES(?,?,?)",
             (guild_id, _day(), user_id),
@@ -198,7 +201,7 @@ async def _record_undo(guild_id: int, actor_id: int | None, action_type: str,
                        target_id: int, snapshot: dict[str, Any]) -> None:
     if actor_id is None:
         return
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute(
             "INSERT INTO ops_undo_actions(guild_id,actor_id,action_type,target_id,snapshot,created_at) "
             "VALUES(?,?,?,?,?,?)",
@@ -246,7 +249,7 @@ async def _undo_last(interaction: discord.Interaction) -> str:
     # Claim one row atomically. A crashed process leaves a lease that can be
     # reclaimed after five minutes; two moderators cannot execute the same row.
     now = _now()
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute("BEGIN IMMEDIATE")
         await db.execute(
             "UPDATE ops_undo_actions SET status='pending',claimed_by=NULL,claimed_at=NULL "
@@ -274,7 +277,7 @@ async def _undo_last(interaction: discord.Interaction) -> str:
         await db.commit()
 
     async def release(status: str, reason: str | None = None) -> None:
-        async with await _db() as db:
+        async with _db() as db:
             await db.execute(
                 "UPDATE ops_undo_actions SET status=?,claimed_by=NULL,claimed_at=NULL,failure=? "
                 "WHERE id=? AND status='executing' AND claimed_by=?",
@@ -390,7 +393,7 @@ async def _undo_last(interaction: discord.Interaction) -> str:
         await release("pending", f"Unexpected error: {type(exc).__name__}")
         return f"Ø­ØµÙ Ø®Ø·Ø£ ØºÙØ± ÙØªÙÙØ¹ Ø£Ø«ÙØ§Ø¡ Ø§ÙØªØ±Ø§Ø¬Ø¹: {type(exc).__name__}."
 
-    async with await _db() as db:
+    async with _db() as db:
         cur = await db.execute(
             "UPDATE ops_undo_actions SET undone=1,status='completed',undone_at=?,claimed_by=NULL,claimed_at=NULL "
             "WHERE id=? AND undone=0 AND status='executing' AND claimed_by=?",
@@ -447,7 +450,7 @@ async def _contain_nuke_actor(guild: discord.Guild, actor_id: int) -> str:
         return "No privileged roles were found on the actor; no role changes were made."
     if any(role.managed or me.top_role <= role for role in privileged):
         return "Containment blocked: at least one privileged role is above the bot or managed."
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
             "SELECT id FROM ops_nuke_quarantines WHERE guild_id=? AND actor_id=? AND status IN ('pending','quarantined','partial','releasing') ORDER BY id DESC LIMIT 1",
@@ -467,11 +470,11 @@ async def _contain_nuke_actor(guild: discord.Guild, actor_id: int) -> str:
     try:
         await member.edit(roles=retained + [quarantine_role], reason="DragonSlayerBot Anti-Nuke containment after confirmed destructive-action burst")
     except (discord.Forbidden, discord.HTTPException) as exc:
-        async with await _db() as db:
+        async with _db() as db:
             await db.execute("UPDATE ops_nuke_quarantines SET status='failed',failure=? WHERE id=?", (type(exc).__name__, record_id))
             await db.commit()
         return f"Containment failed at Discord: {type(exc).__name__}. Review the incident immediately."
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute("UPDATE ops_nuke_quarantines SET status='quarantined' WHERE id=? AND status='pending'", (record_id,))
         await db.commit()
     await _incident(guild.id, "anti_nuke_containment", "Privileged roles removed and quarantine role applied after destructive-action burst", target_id=actor_id,
@@ -483,7 +486,7 @@ async def anti_nuke_release_cmd(interaction: discord.Interaction, member: discor
     guild = interaction.guild
     if guild is None or not isinstance(interaction.user, discord.Member) or not _is_admin(interaction.user):
         return await interaction.response.send_message("â ÙØ­ØªØ§Ø¬ ØµÙØ§Ø­ÙØ© Administrator Ø£Ù Manage Server.", ephemeral=True)
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
             "SELECT id,removed_roles,quarantine_role_id,status FROM ops_nuke_quarantines WHERE guild_id=? AND actor_id=? AND status IN ('quarantined','pending','partial') ORDER BY id DESC LIMIT 1",
@@ -503,7 +506,7 @@ async def anti_nuke_release_cmd(interaction: discord.Interaction, member: discor
             return await interaction.response.send_message("Ø­Ø§ÙØ© Ø³Ø¬Ù Ø§ÙØ¹Ø²Ù Ø§ØªØºÙØ±Øª Ø¨Ø§ÙØªØ²Ø§ÙÙØ Ø£Ø¹Ø¯ ÙØ±Ø§Ø¬Ø¹Ø© Ø§ÙØ­Ø§Ø¯Ø«.", ephemeral=True)
         await db.commit()
     async def release_claim():
-        async with await _db() as db:
+        async with _db() as db:
             await db.execute(
                 "UPDATE ops_nuke_quarantines SET status=? WHERE id=? AND status='releasing'",
                 (previous_status, record_id),
@@ -540,7 +543,7 @@ async def anti_nuke_release_cmd(interaction: discord.Interaction, member: discor
     except (discord.Forbidden, discord.HTTPException) as exc:
         await release_claim()
         return await interaction.response.send_message(f"ÙØ´ÙØª Ø§Ø³ØªØ¹Ø§Ø¯Ø© Ø§ÙØ±ØªØ¨: {type(exc).__name__}.", ephemeral=True)
-    async with await _db() as db:
+    async with _db() as db:
         await db.execute("UPDATE ops_nuke_quarantines SET status='released',released_at=? WHERE id=? AND status='releasing'", (_now().isoformat(), record_id))
         await db.commit()
     await _incident(guild.id, "anti_nuke_release", "Quarantined actor roles restored by administrator", interaction.user.id, member.id,
@@ -590,7 +593,7 @@ async def _security_alert(guild: discord.Guild, rule: str, summary: str,
         threshold, window = 4, 60
     since = (now - dt.timedelta(seconds=window)).isoformat()
     event_types = ("role_delete", "channel_delete", "member_ban", "member_kick", "webhook_delete", "role_privilege_escalation")
-    async with await _db() as db:
+    async with _db() as db:
         placeholders = ",".join("?" for _ in event_types)
         query = f"SELECT COUNT(*) FROM ops_incidents WHERE guild_id=? AND event_type IN ({placeholders}) AND created_at>=?"
         params: tuple[Any, ...] = (guild.id, *event_types, since)
@@ -693,7 +696,7 @@ async def _dashboard_page_embed(guild: discord.Guild, page: str, bot: discord.Cl
     if page == "overview":
         embed.description = "ÙØ±ÙØ² ØªØ­ÙÙ ÙÙØ­Ø¯ Ø¯Ø§Ø®Ù Discord. ÙÙ Ø¥Ø¬Ø±Ø§Ø¡ ÙØ®Ø¶Ø¹ ÙØµÙØ§Ø­ÙØ§Øª Discord ÙØªØ±ØªÙØ¨ Ø§ÙØ±ØªØ¨."
         embed.add_field(name="Server", value=f"Members: **{guild.member_count or len(guild.members):,}**\nChannels: **{len(guild.channels)}**\nRoles: **{max(0, len(guild.roles)-1)}**", inline=True)
-        async with await _db() as db:
+        async with _db() as db:
             raid = await db.execute("SELECT key,value FROM ops_settings WHERE guild_id=? AND key IN ('raid_enabled','raid_threshold','raid_window','raid_role','raid_until')", (guild.id,))
             raid_settings = {str(r[0]): str(r[1]) for r in await raid.fetchall()}
             sec = await db.execute("SELECT key,value FROM ops_settings WHERE guild_id=? AND key IN ('security_log_channel','security_delete_threshold','security_delete_window','anti_nuke_enabled','anti_nuke_threshold','anti_nuke_window','anti_nuke_quarantine_role','anti_nuke_log_channel')", (guild.id,))
@@ -705,7 +708,7 @@ async def _dashboard_page_embed(guild: discord.Guild, page: str, bot: discord.Cl
         embed.add_field(name="Recent activity", value=f"Incidents in last 7 days: **{incident_count}**", inline=False)
         embed.set_footer(text="Choose a page from the menu. Dashboard controls are scoped to this server.")
     elif page == "analytics":
-        async with await _db() as db:
+        async with _db() as db:
             cur = await db.execute("SELECT message_count,join_count,leave_count,active_users FROM ops_activity_daily WHERE guild_id=? AND day=?", (guild.id, _day()))
             today = await cur.fetchone()
             cur = await db.execute("SELECT COALESCE(SUM(message_count),0),COALESCE(SUM(join_count),0),COALESCE(SUM(leave_count),0),COALESCE(SUM(active_users),0) FROM ops_activity_daily WHERE guild_id=? AND day>=date('now','-6 day')", (guild.id,))
@@ -715,7 +718,7 @@ async def _dashboard_page_embed(guild: discord.Guild, page: str, bot: discord.Cl
         embed.add_field(name="Last 7 days", value=f"Messages: **{w[0]}**\nActive-user days: **{w[3]}**\nJoins: **{w[1]}** | Leaves: **{w[2]}**", inline=False)
         embed.set_footer(text="Tracking begins when the extension is enabled; historical activity is not fabricated.")
     elif page == "security":
-        async with await _db() as db:
+        async with _db() as db:
             cur = await db.execute("SELECT key,value FROM ops_settings WHERE guild_id=? AND key IN ('raid_enabled','raid_threshold','raid_window','raid_role','raid_until','security_log_channel','security_delete_threshold','security_delete_window','anti_nuke_enabled','anti_nuke_threshold','anti_nuke_window','anti_nuke_quarantine_role','anti_nuke_log_channel')", (guild.id,))
             settings = {str(r[0]): str(r[1]) for r in await cur.fetchall()}
         quarantine = settings.get("raid_role", "0")
@@ -732,7 +735,7 @@ async def _dashboard_page_embed(guild: discord.Guild, page: str, bot: discord.Cl
         embed.add_field(name="Anti-Nuke containment", value=f"Enabled: **{'Yes' if settings.get('anti_nuke_enabled') == '1' else 'No'}**\nThreshold: **{settings.get('anti_nuke_threshold', '4')} actions / {settings.get('anti_nuke_window', '60')} seconds**\nAlert channel: **{f'<#{nuke_channel_id}>' if nuke_channel_id != '0' else 'Not configured'}**\nQuarantine role: **{f'<@&{nuke_role_id}>' if nuke_role_id != '0' else 'Not configured'}**\nRelease: manual administrator review", inline=False)
         embed.set_footer(text="Anti-Nuke is opt-in; role hierarchy and guild-owner safeguards are enforced.")
     elif page == "incidents":
-        async with await _db() as db:
+        async with _db() as db:
             cur = await db.execute("SELECT id,event_type,actor_id,target_id,summary,created_at FROM ops_incidents WHERE guild_id=? ORDER BY id DESC LIMIT 10", (guild.id,))
             rows = await cur.fetchall()
         if rows:
@@ -740,14 +743,14 @@ async def _dashboard_page_embed(guild: discord.Guild, page: str, bot: discord.Cl
         else:
             embed.description = "No incidents recorded yet."
     elif page == "undo":
-        async with await _db() as db:
+        async with _db() as db:
             cur = await db.execute("SELECT id,action_type,target_id,created_at FROM ops_undo_actions WHERE guild_id=? AND undone=0 ORDER BY id DESC LIMIT 5", (guild.id,))
             rows = await cur.fetchall()
         embed.description = "Ø¢Ø®Ø± Ø§ÙØ¥Ø¬Ø±Ø§Ø¡Ø§Øª Ø§ÙÙØ¯Ø¹ÙÙØ© Ø§ÙØªÙ ÙÙ ÙØªÙ Ø§ÙØªØ±Ø§Ø¬Ø¹ Ø¹ÙÙØ§. Ø§ÙØªØ±Ø§Ø¬Ø¹ ÙØªØ·ÙØ¨ ØªØ£ÙÙØ¯ÙØ§ ÙÙÙØµÙÙØ§."
         embed.add_field(name="Pending undo records", value="\n".join(f"`#{r[0]}` **{str(r[1])[:40]}** Â· target `{r[2] or 'N/A'}` Â· <t:{int(dt.datetime.fromisoformat(r[3]).timestamp())}:R>" for r in rows) if rows else "No undoable actions.", inline=False)
     elif page == "health":
         try:
-            async with await _db() as db:
+            async with _db() as db:
                 cur = await db.execute("PRAGMA quick_check")
                 row = await cur.fetchone()
             state = str(row[0]) if row else "unknown"
@@ -756,7 +759,7 @@ async def _dashboard_page_embed(guild: discord.Guild, page: str, bot: discord.Cl
         embed.add_field(name="SQLite quick_check", value=f"**{state}**", inline=False)
         embed.set_footer(text="Read-only integrity check. This does not validate migrations, schema completeness, or live Discord connectivity.")
     elif page == "tickets":
-        async with await _db() as db:
+        async with _db() as db:
             cur = await db.execute(
                 "SELECT user_id,channel_id,COALESCE(priority,'normal'),claimed_by,created_at,status "
                 "FROM tickets WHERE guild_id=? AND status IN ('open','closing') "
@@ -857,7 +860,7 @@ async def _send_dashboard_ai_insights(interaction: discord.Interaction) -> None:
         return await interaction.response.send_message("â ÙØ­ØªØ§Ø¬ ØµÙØ§Ø­ÙØ© Administrator Ø£Ù Manage Server.", ephemeral=True)
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        async with await _db() as db:
+        async with _db() as db:
             cur = await db.execute(
                 "SELECT COALESCE(SUM(message_count),0),COALESCE(SUM(join_count),0),COALESCE(SUM(leave_count),0),COALESCE(SUM(active_users),0) "
                 "FROM ops_activity_daily WHERE guild_id=? AND day>=date('now','-6 day')",
@@ -979,7 +982,7 @@ async def _send_analytics(interaction: discord.Interaction) -> None:
     guild = interaction.guild
     if guild is None:
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    async with await _db() as db:
+    async with _db() as db:
         cur = await db.execute(
             "SELECT message_count,join_count,leave_count,active_users FROM ops_activity_daily "
             "WHERE guild_id=? AND day=?", (guild.id, _day()),
@@ -1016,7 +1019,7 @@ async def _send_incidents(interaction: discord.Interaction) -> None:
     guild = interaction.guild
     if guild is None:
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    async with await _db() as db:
+    async with _db() as db:
         cur = await db.execute(
             "SELECT id,event_type,actor_id,target_id,summary,created_at FROM ops_incidents "
             "WHERE guild_id=? ORDER BY id DESC LIMIT 10", (guild.id,),
@@ -1096,7 +1099,7 @@ async def health_cmd(interaction: discord.Interaction):
     if not interaction.guild or not isinstance(interaction.user, discord.Member) or not _is_admin(interaction.user):
         return await interaction.response.send_message("â ÙØ­ØªØ§Ø¬ ØµÙØ§Ø­ÙØ© Administrator Ø£Ù Manage Server.", ephemeral=True)
     try:
-        async with await _db() as db:
+        async with _db() as db:
             cur = await db.execute("PRAGMA quick_check")
             result = await cur.fetchone()
         state = str(result[0]) if result else "unknown"
@@ -1120,7 +1123,7 @@ class OperationsExtension:
                 if not self.bot.is_ready():
                     await asyncio.sleep(30)
                     continue
-                async with await _db() as db:
+                async with _db() as db:
                     cur = await db.execute(
                         "SELECT guild_id,user_id,channel_id FROM tickets "
                         "WHERE status='open' AND created_at IS NOT NULL "
@@ -1132,7 +1135,7 @@ class OperationsExtension:
                     channel = guild.get_channel(int(channel_id)) if guild else None
                     if guild is None or not isinstance(channel, discord.TextChannel):
                         continue
-                    async with await _db() as db:
+                    async with _db() as db:
                         cur = await db.execute(
                             "SELECT value FROM guild_cfg WHERE guild_id=? AND log_type='all' AND key='audit_channel'",
                             (guild.id,),
@@ -1142,7 +1145,7 @@ class OperationsExtension:
                     if not isinstance(audit, discord.TextChannel):
                         continue
                     now = _now()
-                    async with await _db() as db:
+                    async with _db() as db:
                         await db.execute("BEGIN IMMEDIATE")
                         await db.execute(
                             "INSERT OR IGNORE INTO ops_ticket_sla_notices(guild_id,channel_id,status) VALUES(?,?,'pending')",
@@ -1186,14 +1189,14 @@ class OperationsExtension:
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                     except discord.HTTPException as exc:
-                        async with await _db() as db:
+                        async with _db() as db:
                             await db.execute(
                                 "UPDATE ops_ticket_sla_notices SET status='pending',claimed_at=NULL,last_error=? WHERE guild_id=? AND channel_id=? AND status='sending'",
                                 (type(exc).__name__, guild.id, int(channel_id)),
                             )
                             await db.commit()
                         continue
-                    async with await _db() as db:
+                    async with _db() as db:
                         await db.execute(
                             "UPDATE ops_ticket_sla_notices SET status='sent',notified_at=?,claimed_at=NULL,last_error=NULL WHERE guild_id=? AND channel_id=? AND status='sending'",
                             (_now().isoformat(), guild.id, int(channel_id)),
@@ -1233,7 +1236,7 @@ class OperationsExtension:
         cutoff = (now_dt - dt.timedelta(seconds=window)).isoformat()
         # Persist the rolling join window so a process restart does not erase
         # evidence of an ongoing join burst.
-        async with await _db() as db:
+        async with _db() as db:
             await db.execute(
                 "INSERT OR REPLACE INTO ops_join_events(guild_id,user_id,joined_at) VALUES(?,?,?)",
                 (member.guild.id, member.id, now_dt.isoformat()),
@@ -1341,7 +1344,7 @@ class OperationsExtension:
                 target_id = getattr(entry.target, "id", None)
                 actor_id = entry.user.id if entry.user else None
                 cutoff = (_now() - dt.timedelta(seconds=12)).isoformat()
-                async with await _db() as db:
+                async with _db() as db:
                     cur = await db.execute("SELECT 1 FROM ops_incidents WHERE guild_id=? AND event_type='webhook_delete' AND target_id=? AND created_at>=? LIMIT 1", (channel.guild.id, target_id, cutoff))
                     if await cur.fetchone():
                         continue
@@ -1353,7 +1356,7 @@ class OperationsExtension:
 
 
 async def setup(bot: discord.Client):
-    async with await _db() as db:
+    async with _db() as db:
         await db.executescript(SCHEMA)
         cur = await db.execute("PRAGMA table_info(ops_undo_actions)")
         columns = {str(row[1]) for row in await cur.fetchall()}
