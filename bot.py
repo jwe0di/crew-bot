@@ -25,10 +25,14 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 import config
+from core.command_registry import CommandRegistry
+from core.database import Migration, run_migrations, validate_database_file
+from core.event_bus import EventBus
+from core.service_registry import ServiceRegistry
 
 load_dotenv()
 
-BOT_VERSION = "v9.9.2-dev (Multi-Role Command Permissions)"
+BOT_VERSION = "v9.9.4-dev (Database Migration Foundation)"
 DB = os.getenv("DB_PATH", "crewbot.db")
 JSON_CONFIG_PATH = os.getenv("JSON_CONFIG_PATH") or os.path.join(os.path.dirname(DB) or ".", "servers_settings.json")
 os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
@@ -127,6 +131,7 @@ UPDATE_TYPE_CHOICES = [app_commands.Choice(name=v["label"][:100], value=k) for k
 # Populated from the actual registered application commands after all decorators run.
 # This avoids stale/phantom names in command-permission autocomplete and validation.
 ALL_BOT_COMMANDS: List[str] = []
+COMMAND_REGISTRY = CommandRegistry()
 
 # ================================================================ Ø§ÙÙØµÙØµ Ø§ÙÙØ¯ÙØ¬Ø© (English / Arabic)
 TEXTS = {
@@ -220,6 +225,14 @@ LEGACY_TYPE_MAP = {"outside": "1v1", "internal": "training"}
 LEGACY_POINT_KEYS = {"points:outside_win": "points:1v1_win", "points:outside_loss": "points:1v1_loss", "points:internal": "points:training", "template:outside": "template:1v1", "template:internal": "template:training"}
 
 INDEXES = """ CREATE INDEX IF NOT EXISTS idx_logs_guild_status ON logs(guild_id, status); CREATE INDEX IF NOT EXISTS idx_logs_author_created ON logs(guild_id, author_id, created_at); CREATE INDEX IF NOT EXISTS idx_logs_season ON logs(guild_id, season_id); CREATE INDEX IF NOT EXISTS idx_point_events_guild_season ON point_events(guild_id, season_id); CREATE INDEX IF NOT EXISTS idx_point_events_user ON point_events(guild_id, user_id); CREATE INDEX IF NOT EXISTS idx_point_events_created ON point_events(guild_id, created_at); CREATE INDEX IF NOT EXISTS idx_point_events_log ON point_events(log_id); CREATE INDEX IF NOT EXISTS idx_point_events_season_user ON point_events(guild_id, season_id, user_id); CREATE INDEX IF NOT EXISTS idx_logs_parent ON logs(parent_id); CREATE INDEX IF NOT EXISTS idx_hashes_hash ON hashes(hash); CREATE INDEX IF NOT EXISTS idx_cmd_roles_guild ON cmd_roles(guild_id); CREATE INDEX IF NOT EXISTS idx_cmd_role_grants_guild ON cmd_role_grants(guild_id, cmd_name); CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_one_open_per_user ON tickets(guild_id,user_id) WHERE status IN ('open','closing'); """
+
+def _migration_v1_member_points_index(db):
+    db.execute("CREATE INDEX IF NOT EXISTS idx_members_guild_points ON members(guild_id, points DESC)")
+
+
+DB_MIGRATIONS = (Migration(1, "member_points_lookup_index", _migration_v1_member_points_index),)
+DB_MIGRATION_INDEXES = ("idx_members_guild_points",)
+
 
 LOG_ID_RE = re.compile(r"`Log #(\d+)`")
 LOG_ID_FALLBACK_RE = re.compile(r"Log #(\d+)")
@@ -340,6 +353,12 @@ async def init_db():
         await db.executescript(INDEXES)
         await db.commit()
     await fix_db_columns()
+    # New schema changes use an explicit transactional migration ledger. The
+    # legacy reconciler above remains responsible for historical data upgrades.
+    await asyncio.to_thread(run_migrations, DB, DB_MIGRATIONS)
+    valid, validation_errors = await asyncio.to_thread(_validate_live_database, DB)
+    if not valid:
+        raise RuntimeError("Database schema validation failed: " + "; ".join(validation_errors))
     await auto_restore_from_json()
     # Remove obsolete command locks restored from older snapshots after the live registry exists.
     if ALL_BOT_COMMANDS:
@@ -359,7 +378,7 @@ async def auto_restore_from_json():
         return
     try:
         async with aiosqlite.connect(DB) as db:
-            cur = await db.execute("SELECT (SELECT COUNT(*) FROM settings) + (SELECT COUNT(*) FROM guild_cfg) + (SELECT COUNT(*) FROM role_perms) + (SELECT COUNT(*) FROM cmd_roles)")
+            cur = await db.execute("SELECT (SELECT COUNT(*) FROM settings) + (SELECT COUNT(*) FROM guild_cfg) + (SELECT COUNT(*) FROM role_perms) + (SELECT COUNT(*) FROM cmd_roles) + (SELECT COUNT(*) FROM cmd_role_grants) + (SELECT COUNT(*) FROM cmd_users)")
             if (await cur.fetchone())[0] > 0:
                 return
         raw = await asyncio.to_thread(_read_bytes, JSON_CONFIG_PATH)
@@ -378,6 +397,8 @@ async def auto_restore_from_json():
                 await db.execute("INSERT OR IGNORE INTO cmd_role_grants VALUES(?,?,?)", (r["guild_id"], r["cmd_name"], r["role_id"]))
             for r in data.get("cmd_role_grants", []):
                 await db.execute("INSERT OR IGNORE INTO cmd_role_grants VALUES(?,?,?)", (r["guild_id"], r["cmd_name"], r["role_id"]))
+            for r in data.get("cmd_users", []):
+                await db.execute("INSERT OR IGNORE INTO cmd_users VALUES(?,?,?)", (r["guild_id"], r["cmd_name"], r["user_id"]))
             await db.commit()
         print("â Settings restored from JSON.")
     except Exception as e:
@@ -405,7 +426,7 @@ async def save_config_snapshot_json():
         async with aiosqlite.connect(DB) as db:
             db.row_factory = aiosqlite.Row
             out = {}
-            for name, sql in (("guild_cfg", "SELECT * FROM guild_cfg"), ("role_perms", "SELECT * FROM role_perms"), ("cmd_roles", "SELECT * FROM cmd_roles"), ("cmd_role_grants", "SELECT * FROM cmd_role_grants"), ("settings", "SELECT guild_id, key, value FROM settings WHERE key NOT LIKE 'state:%'")):
+            for name, sql in (("guild_cfg", "SELECT * FROM guild_cfg"), ("role_perms", "SELECT * FROM role_perms"), ("cmd_roles", "SELECT * FROM cmd_roles"), ("cmd_role_grants", "SELECT * FROM cmd_role_grants"), ("cmd_users", "SELECT * FROM cmd_users"), ("settings", "SELECT guild_id, key, value FROM settings WHERE key NOT LIKE 'state:%'")):
                 cur = await db.execute(sql)
                 out[name] = [dict(r) for r in await cur.fetchall()]
         out.update({"version": BOT_VERSION, "description": "Configuration snapshot only.", "updated_at": now_utc().isoformat()})
@@ -838,6 +859,9 @@ class CrewBot(discord.Client):
         self.loaded_plugins = set()
         self.plugin_modules = {}
         self.admin_analytics_ai = admin_analytics_ai
+        self.event_bus = EventBus()
+        self.services = ServiceRegistry()
+        self.services.register("event_bus", self.event_bus)
 
     async def load_plugin(self, module_name: str):
         """Load a feature module through the stable async setup(bot) contract."""
@@ -870,6 +894,7 @@ class CrewBot(discord.Client):
             return False
 
     async def setup_hook(self):
+        await self.services.start_all()
         await init_db()
         await _ai_db_init()
         if not await self.load_plugin("extensions.operations"):
@@ -896,6 +921,10 @@ class CrewBot(discord.Client):
                         await result
                 except Exception as exc:
                     print(f"â ï¸ Plugin shutdown failed ({module_name}): {type(exc).__name__}")
+        try:
+            await self.services.close()
+        except Exception as exc:
+            print(f"â ï¸ Shared service shutdown failed: {type(exc).__name__}")
         await super().close()
 
     async def sync_guild(self, guild: discord.Guild):
@@ -910,6 +939,7 @@ class CrewBot(discord.Client):
 
     async def on_ready(self):
         print(f"Bot logged in as {self.user} (Version {BOT_VERSION})")
+        await self.event_bus.publish("bot.ready", {"user_id": getattr(self.user, "id", None), "guild_count": len(self.guilds)})
         if not self._ready_once:
             if not self._legacy_adoption_done:
                 try:
@@ -935,6 +965,7 @@ class CrewBot(discord.Client):
             ai_temporary_unlocks.start()
 
     async def on_guild_join(self, guild):
+        await self.event_bus.publish("guild.join", {"guild_id": guild.id, "guild_name": guild.name})
         await self.sync_guild(guild)
         try:
             target = guild.system_channel or next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
@@ -2675,13 +2706,17 @@ async def season_top(i: discord.Interaction, name: app_commands.Range[str, 1, 50
     await i.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
 
 def _backup_file(path):
-    src = sqlite3.connect(DB)
-    dst = sqlite3.connect(path)
+    src = sqlite3.connect(DB, timeout=30)
+    dst = sqlite3.connect(path, timeout=30)
     try:
-        src.backup(dst)
+        src.execute("PRAGMA busy_timeout=30000")
+        src.backup(dst, pages=256, sleep=0.05)
+        dst.execute("PRAGMA integrity_check").fetchone()
     finally:
         dst.close()
         src.close()
+    if not _validate_sqlite(path):
+        raise RuntimeError("Backup verification failed: database integrity or required schema is incomplete")
 
 @bot.tree.command(name="backup", description="Secure backup tool / Ø£Ø¯Ø§Ø© Ø§ÙÙØ³Ø® Ø§ÙØ§Ø­ØªÙØ§Ø·Ù Ø§ÙØ¢ÙÙØ©")
 @app_commands.checks.cooldown(1, 60.0)
@@ -2750,7 +2785,7 @@ async def restore_settings_json(guild_id: int, raw: bytes) -> dict:
     if file_version and file_version != BOT_VERSION:
         print(f"â ï¸ Restoring settings from version {file_version} into {BOT_VERSION} â schema may differ.")
     valid_types = set(LOG_TYPES) | {"all"}
-    counts = {"settings": 0, "guild_cfg": 0, "role_perms": 0, "cmd_roles": 0, "cmd_role_grants": 0, "skipped": 0}
+    counts = {"settings": 0, "guild_cfg": 0, "role_perms": 0, "cmd_roles": 0, "cmd_role_grants": 0, "cmd_users": 0, "skipped": 0}
 
     def mine(r):
         return isinstance(r, dict) and r.get("guild_id") == guild_id
@@ -2790,6 +2825,12 @@ async def restore_settings_json(guild_id: int, raw: bytes) -> dict:
                     counts["cmd_role_grants"] += 1
                 else:
                     counts["skipped"] += 1
+            for r in data.get("cmd_users", []):
+                if mine(r) and r.get("cmd_name") in ALL_BOT_COMMANDS and _is_int(r.get("user_id")):
+                    await db.execute("INSERT OR IGNORE INTO cmd_users VALUES(?,?,?)", (guild_id, r["cmd_name"], r["user_id"]))
+                    counts["cmd_users"] += 1
+                else:
+                    counts["skipped"] += 1
             await db.commit()
         except Exception:
             await db.rollback()
@@ -2798,21 +2839,18 @@ async def restore_settings_json(guild_id: int, raw: bytes) -> dict:
     return counts
 
 def _validate_sqlite(path):
-    con = sqlite3.connect(path)
-    try:
-        ok = con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    except sqlite3.DatabaseError:
-        return False
-    finally:
-        con.close()
-    # A backup must contain the core schema, not merely two coincidentally named tables.
-    required = {
-        "settings", "members", "logs", "hashes", "guild_cfg", "role_perms",
-        "point_events", "cmd_roles", "cmd_role_grants", "cmd_users", "crews", "tickets",
-        "shop_items", "achievements", "quests", "events"
-    }
-    return ok and required.issubset(tables)
+    valid, _errors = validate_database_file(
+        path, SCHEMA, INDEXES, migration_indexes=DB_MIGRATION_INDEXES,
+        require_migrations=False,
+    )
+    return valid
+
+
+def _validate_live_database(path):
+    return validate_database_file(
+        path, SCHEMA, INDEXES, migration_indexes=DB_MIGRATION_INDEXES,
+        require_migrations=True,
+    )
 
 def _restore_into_live(src_path):
     src = sqlite3.connect(src_path)
@@ -2979,10 +3017,11 @@ _HELP_SECTIONS = [
 def refresh_registered_command_index():
     """Refresh the canonical command-name list from Discord.py's command tree."""
     global ALL_BOT_COMMANDS
-    ALL_BOT_COMMANDS = sorted(
+    names = (
         command.name for command in bot.tree.get_commands()
         if isinstance(command, app_commands.Command)
     )
+    ALL_BOT_COMMANDS = list(COMMAND_REGISTRY.refresh(names))
     return ALL_BOT_COMMANDS
 
 
