@@ -1405,4 +1405,4 @@ async def teardown(bot: discord.Client):
     ext = getattr(bot, "operations_extension", None)
     if ext:
         await ext.shutdown()
-        bot.operations_extension = None 
+        bot.operations_extension = None
