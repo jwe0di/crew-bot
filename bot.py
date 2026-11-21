@@ -5675,7 +5675,8 @@ class AIActionConfirmationView(discord.ui.View):
         guild = bot.get_guild(self.guild_id)
         ok, result = await _ai_finish_pending_action(guild, self.requester_id, interaction.user.id, self.token)
         try:
-            await interaction.edit_original_response(content=("✅ " if ok else "❌ ") + result, view=None)
+            prefix = "⚠️ " if result.startswith("BATCH PARTIAL:") else ("✅ " if ok else "❌ ")
+        await interaction.edit_original_response(content=prefix + result, view=None)
         except discord.HTTPException:
             await interaction.followup.send(("✅ " if ok else "❌ ") + result)
 
