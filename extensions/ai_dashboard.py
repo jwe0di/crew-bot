@@ -309,6 +309,9 @@ class DashboardView(discord.ui.View):
 
 
 async def setup(bot) -> None:
+    # Register stable custom IDs so published dashboards survive process restarts.
+    bot.add_view(DashboardView(bot, timeout=None))
+
     @bot.tree.command(
         name="ai-dashboard",
         description="Open the Discord-native AI administration dashboard",
@@ -353,7 +356,6 @@ async def setup(bot) -> None:
             view=DashboardView(bot, timeout=None),
             allowed_mentions=discord.AllowedMentions.none(),
         )
-        bot.add_view(DashboardView(bot, timeout=None), message_id=message.id)
         await interaction.response.send_message(
             f"Dashboard published in {channel.mention}.", ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
