@@ -4,6 +4,8 @@ import re
 import unittest
 from pathlib import Path
 
+import discord
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BOT_SOURCE = (ROOT / "bot.py").read_text(encoding="utf-8")
@@ -49,6 +51,29 @@ class NativeDiscordCoverageTests(unittest.TestCase):
         self.assertIn('name="ai-dashboard"', DASHBOARD_SOURCE)
         self.assertIn('name="publish-ai-dashboard"', DASHBOARD_SOURCE)
         self.assertIn("self.bot.ai_run", DASHBOARD_SOURCE)
+
+    def test_discord_py_apis_used_by_new_tools_exist(self) -> None:
+        for symbol in (
+            "AutoModRuleTriggerType",
+            "AutoModRuleActionType",
+            "AutoModRuleEventType",
+            "AutoModRuleAction",
+            "AutoModTrigger",
+            "PrivacyLevel",
+            "EntityType",
+        ):
+            with self.subTest(symbol=symbol):
+                self.assertTrue(hasattr(discord, symbol))
+        for method in (
+            "create_forum",
+            "create_stage_channel",
+            "fetch_scheduled_events",
+            "create_scheduled_event",
+            "fetch_automod_rules",
+            "create_automod_rule",
+        ):
+            with self.subTest(method=method):
+                self.assertTrue(hasattr(discord.Guild, method))
 
     def test_log_sources_are_explicitly_separated(self) -> None:
         self.assertIn("not Railway runtime logs", BOT_SOURCE)
