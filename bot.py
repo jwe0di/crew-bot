@@ -5482,12 +5482,12 @@ def _ai_requires_owner_approval(guild, name, args):
                 if not clean_keywords:
                     return "DENIED: at least one non-empty keyword is required."
                 trigger = discord.AutoModTrigger(
-                    type=discord.AutoModTriggerType.keyword,
+                    type=discord.AutoModRuleTriggerType.keyword,
                     keyword_filter=clean_keywords,
                 )
-                actions = [discord.AutoModAction(type=discord.AutoModActionType.block_message)]
+                actions = [discord.AutoModRuleAction(type=discord.AutoModRuleActionType.block_message)]
                 created = await guild.create_automod_rule(
-                    name=rule_name, event_type=discord.AutoModEventType.message_send,
+                    name=rule_name, event_type=discord.AutoModRuleEventType.message_send,
                     trigger=trigger, actions=actions, enabled=bool(args.get("enabled", True)), reason=reason,
                 )
                 await _ai_audit(ctx, name, f"Created native AutoMod keyword rule {created.id} ({rule_name})")
@@ -6119,8 +6119,8 @@ async def _exec_ai_tool(ctx, name, args):
             for item in rows[:limit]:
                 message = str(item.get("message") or "")
                 message = re.sub(
-                    r"(?i)(token|password|secret|api[_-]?key)\\s*[:=]\\s*[^\\s,;]+",
-                    r"\\1=[REDACTED]",
+                    r"(?i)(token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+",
+                    r"\1=[REDACTED]",
                     message,
                 )
                 if _ai_contains_secret_material(message):
@@ -6560,7 +6560,7 @@ async def _exec_ai_tool(ctx, name, args):
             channel = await guild.create_voice_channel(channel_name, reason=reason)
         elif name == "create_forum_channel":
             topic = str(args.get("topic", "")).strip()[:900] or None
-            channel = await guild.create_forum_channel(channel_name, topic=topic, reason=reason)
+            channel = await guild.create_forum(channel_name, topic=topic, reason=reason)
         elif name == "create_stage_channel":
             channel = await guild.create_stage_channel(channel_name, reason=reason)
         else:
