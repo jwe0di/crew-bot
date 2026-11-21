@@ -5674,11 +5674,11 @@ class AIActionConfirmationView(discord.ui.View):
         await interaction.response.edit_message(content="⏳ جاري التحقق من الموافقة والصلاحيات وتنفيذ الإجراء...", view=self)
         guild = bot.get_guild(self.guild_id)
         ok, result = await _ai_finish_pending_action(guild, self.requester_id, interaction.user.id, self.token)
+        prefix = "⚠️ " if result.startswith("BATCH PARTIAL:") else ("✅ " if ok else "❌ ")
         try:
-            prefix = "⚠️ " if result.startswith("BATCH PARTIAL:") else ("✅ " if ok else "❌ ")
-        await interaction.edit_original_response(content=prefix + result, view=None)
+            await interaction.edit_original_response(content=prefix + result, view=None)
         except discord.HTTPException:
-            await interaction.followup.send(("✅ " if ok else "❌ ") + result)
+            await interaction.followup.send(prefix + result)
 
     @discord.ui.button(label="رفض الطلب", style=discord.ButtonStyle.danger, emoji="❌")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
