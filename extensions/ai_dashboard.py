@@ -68,6 +68,7 @@ def _dashboard_embed(guild: discord.Guild, page: str = "overview") -> discord.Em
             "Logs & Audit",
             "• AI action history is stored in the bot database\n"
             "• Discord Audit Log is separate from Railway runtime logs\n"
+            "• Ask AI for Railway runtime logs after configuring the Railway API variables\n"
             "• Configure the AI audit destination with /set-ai-log-channel",
         ),
     }
