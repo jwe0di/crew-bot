@@ -5171,6 +5171,7 @@ class AIContext:
         self.confirmed_action = bool(confirmed_action)
         self.attachments = list(attachments or [])[:10]
         self.pending_confirmations = []
+        self.action_receipts = []
 
 async def _ai_db_init():
     async with aiosqlite.connect(DB) as db:
@@ -6700,6 +6701,7 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
     await _ai_db_init()
     ctx.defer_owner_approval = True
     ctx.deferred_owner_actions = []
+    ctx.action_receipts = []
     lang = detect_language(text)
     original_text = str(text or "Please analyze the attached image or file.")[:8500]
 
@@ -6795,6 +6797,8 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
                     answer = "❌ لم يتم إرسال طلب الموافقة، ولم يتم تنفيذ أي إجراء.\n" + approval_result
                 else:
                     answer += "\n\n" + approval_result
+            if ctx.action_receipts:
+                answer += "\n\n**نتائج الأدوات المؤكدة من التطبيق:**\n" + "\n".join(f"- {name}: {output}" for name, output in ctx.action_receipts[-10:])
             answer = answer[:AI_MAX_REPLY_CHARS]
             history.append({"role": "assistant", "content": answer})
             # Do not persist raw attachment contents in long-term AI conversation memory.
@@ -6826,6 +6830,8 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
                 output = f"Discord API error: {exc.status}."
             except Exception as exc:
                 output = f"Tool failed: {type(exc).__name__}."
+            if name in _AI_MUTATING_TOOLS or name in _AI_OWNER_APPROVAL_TOOLS:
+                ctx.action_receipts.append((name, str(output)[:700]))
             history.append({"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": str(output)[:1800]})
     limit_text = "⚠️ وصلت للحد الأقصى لخطوات الأدوات في الطلب الواحد. قسّم الطلب لخطوات أصغر."
     approval_result = await _ai_submit_deferred_approvals(ctx)
