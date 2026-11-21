@@ -6032,6 +6032,8 @@ async def _exec_ai_tool(ctx, name, args):
                 rules = await guild.fetch_automod_rules()
             except discord.Forbidden:
                 return "DENIED: Discord refused AutoMod access; check Manage Server permission."
+            except discord.NotFound:
+                rules = []
             limit = max(1, min(30, int(args.get("limit", 20) or 20)))
             lines = []
             for rule_item in rules[:limit]:
@@ -6414,6 +6416,12 @@ async def _exec_ai_tool(ctx, name, args):
                 changes["location"] = location
             if not changes:
                 return "No event changes supplied."
+            new_start = changes.get("start_time", event.start_time)
+            new_end = changes.get("end_time", event.end_time)
+            if new_start and new_end and new_end <= new_start:
+                return "DENIED: event end time must be later than its start time."
+            if "start_time" in changes and new_start <= now_utc():
+                return "DENIED: a rescheduled event must start in the future."
             await event.edit(reason=reason, **changes)
             await _ai_audit(ctx, name, f"Edited native Discord scheduled event {event.id}: {', '.join(changes)}")
             return f"Updated native Discord scheduled event {event.name}."
@@ -6424,8 +6432,8 @@ async def _exec_ai_tool(ctx, name, args):
         if not me or not me.guild_permissions.manage_guild:
             return "DENIED: bot needs Manage Server permission for AutoMod."
         try:
-            rules = await guild.fetch_automod_rules()
             if name == "create_automod_keyword_rule":
+                rules = []
                 rule_name = _ai_safe_name(args.get("name"), 100)
                 keywords = args.get("keywords")
                 if not rule_name or not isinstance(keywords, list):
@@ -6448,6 +6456,10 @@ async def _exec_ai_tool(ctx, name, args):
                 )
                 await _ai_audit(ctx, name, f"Created native AutoMod keyword rule {created.id} ({rule_name})")
                 return f"Created AutoMod keyword rule {rule_name} (ID {created.id}); matching messages are blocked."
+            try:
+                rules = await guild.fetch_automod_rules()
+            except discord.NotFound:
+                return "No AutoMod rules exist in this server."
             rule_id = str(args.get("rule_id", "")).strip()
             if not rule_id.isdigit():
                 return "DENIED: rule_id must be a numeric Discord AutoMod rule ID."
