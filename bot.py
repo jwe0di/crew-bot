@@ -4721,6 +4721,7 @@ async def run_daily_quests():
 async def run_backup():
     if not owner_id(): return
     now = now_utc()
+    retry_interval = timedelta(hours=1)
     due = []
     for guild in bot.guilds:
         try:
@@ -4730,12 +4731,30 @@ async def run_backup():
             last = await raw_setting(guild.id, "state:last_backup")
             if last:
                 try:
-                    if (now - dt.datetime.fromisoformat(last)).total_seconds() < cycle: continue
+                    last_success = dt.datetime.fromisoformat(last)
+                    if last_success.tzinfo is None:
+                        last_success = last_success.replace(tzinfo=timezone.utc)
+                    if (now - last_success).total_seconds() < cycle: continue
+                except ValueError: pass
+            last_attempt = await raw_setting(guild.id, "state:last_backup_attempt")
+            if last_attempt:
+                try:
+                    attempted_at = dt.datetime.fromisoformat(last_attempt)
+                    if attempted_at.tzinfo is None:
+                        attempted_at = attempted_at.replace(tzinfo=timezone.utc)
+                    if now - attempted_at < retry_interval: continue
                 except ValueError: pass
             due.append(guild)
         except Exception as e:
             print(f"⚠️ Auto backup check error: {e}")
     if not due: return
+    # Record the attempt separately; failed delivery must not advance last-success,
+    # but it also must not trigger a DM attempt on every 30-minute maintenance tick.
+    for guild in due:
+        try:
+            await set_setting(guild.id, "state:last_backup_attempt", now.isoformat())
+        except Exception as exc:
+            print(f"⚠️ Could not persist backup attempt for guild {guild.id}: {type(exc).__name__}")
     path = os.path.join(tempfile.gettempdir(), f"crewbot-auto-{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}.db")
     try:
         await asyncio.to_thread(_backup_file, path)
@@ -4744,9 +4763,9 @@ async def run_backup():
         extra = f" (+{len(due) - 5} more)" if len(due) > 5 else ""
         delivered = await dm_owner(f"🗄️ **Scheduled backup** — due for: {names}{extra}", file=discord.File(io.BytesIO(payload), filename=os.path.basename(path)))
         if not delivered:
-            print("⚠️ Scheduled backup was created but not delivered to the owner; retry remains due.")
+            print("⚠️ Scheduled backup was created but not delivered to the owner; retry is deferred for one hour.")
             return
-        # Advance each guild's schedule only after the backup reached the owner.
+        # Advance each guild's success schedule only after the verified backup reached the owner.
         for guild in due:
             try:
                 await set_setting(guild.id, "state:last_backup", now.isoformat())

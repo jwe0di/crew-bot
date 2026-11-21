@@ -38,6 +38,12 @@ def choice(value, name=None):
     return app_commands.Choice(name=name or value, value=value)
 
 
+async def invoke(command, *args, **kwargs):
+    """Invoke a slash-command callback directly in unit tests."""
+    callback = getattr(command, "callback", command)
+    return await callback(*args, **kwargs)
+
+
 class BotTestCase(unittest.IsolatedAsyncioTestCase):
     GID = 1
 
@@ -50,6 +56,8 @@ class BotTestCase(unittest.IsolatedAsyncioTestCase):
         self.channels = {}
         self.lvl_roles = [self.role(n, 100 + k) for k, (n, _) in enumerate(bot.LADDER)]
         self.guild = self.make_guild(self.GID)
+        bot.bot._connection._guilds = {self.GID: self.guild}
+        bot.bot.fetch_user = AsyncMock(return_value=SimpleNamespace(send=AsyncMock()))
         self.review_ch = self.channel(600)
         self.log_ch = self.channel(700)
         await bot.cfg_set(self.GID, "all", "review_channel", 600)
@@ -95,11 +103,13 @@ class BotTestCase(unittest.IsolatedAsyncioTestCase):
     def member(self, uid, admin=False, roles=()):
         m = MagicMock(spec=discord.Member)
         m.id, m.bot, m.mention, m.display_name = uid, False, f"<@{uid}>", f"user{uid}"
+        m.created_at = bot.now_utc() - bot.timedelta(days=30)
         m.roles = list(roles)
         m.guild_permissions = SimpleNamespace(administrator=admin)
         m.guild = self.guild
         m.add_roles, m.remove_roles, m.send = AsyncMock(), AsyncMock(), AsyncMock()
         m.display_avatar = SimpleNamespace(url="http://x")
+        m.color = discord.Color.default()
         self.members[uid] = m
         return m
 
@@ -257,7 +267,7 @@ class PureFunctionTests(unittest.TestCase):
     def test_render_handles_every_type_and_legacy_data(self):
         for t in bot.LOG_TYPES:
             self.assertIn("Log #1", bot.render(1, t, 10, {}, None))
-        self.assertIn("a vs b", bot.render(1, "training", 10, {"p1": "a", "p2": "b"}, None))
+        self.assertIn("a vs b", bot.render(1, "training", 10, {"p1": "a", "p2": "b"}, None, custom_template="{p1} vs {p2}"))
 
     def test_log_id_parsing_ignores_user_text(self):
         msg = MagicMock(spec=discord.Message)
@@ -293,11 +303,11 @@ class PermissionTests(BotTestCase):
         self.assertTrue(await bot.check_cmd_perm(self.interaction(plain), "rates"))
 
     async def test_editor_and_owner(self):
-        commander = self.member(1, roles=[self.role("~DS | Commander", 5)])
+        commander = self.member(1, roles=[self.role("Commander", 5)])
         nobody = self.member(2)
         owner = self.member(999)
-        self.assertTrue(bot.is_editor(commander))
-        self.assertFalse(bot.is_editor(nobody))
+        self.assertTrue(await bot.is_editor(commander))
+        self.assertFalse(await bot.is_editor(nobody))
         self.assertTrue(bot.is_admin(owner))
 
     async def test_reviewer_roles_configurable_per_type(self):
@@ -371,7 +381,7 @@ class AcceptRejectTests(BotTestCase):
         lid = await self.insert_log()
         await self.accept(lid, reviewer)
         i2 = await self.accept(lid, reviewer2)
-        self.assertIn("already", self.last_text(i2.response.send_message))
+        self.assertIn("already", self.last_text(i2.response.send_message).casefold())
         self.assertEqual(await self.balance(10), 8)
         self.assertEqual(await self.scalar("SELECT COUNT(*) FROM point_events"), 1)
 
@@ -381,7 +391,7 @@ class AcceptRejectTests(BotTestCase):
         await bot.set_setting(self.GID, "state:current_season", "season_new")
         lid = await self.insert_log(season="main")
         i = await self.accept(lid, reviewer)
-        self.assertIn("previous season", self.last_text(i.response.send_message))
+        self.assertIn("previous season", self.last_text(i.response.send_message).casefold())
         self.assertIsNone(await self.balance(10))
 
     async def test_war_points_go_only_to_confirmed_teammates(self):
@@ -402,7 +412,8 @@ class AcceptRejectTests(BotTestCase):
         reviewer = self.member(20, admin=True)
         data = {"score": "7/10", "candidate_id": 50, "candidate": "<@50>", "tester_id": 10}
         lid = await self.insert_log(type_="tryout", author=10, result="win", data=data)
-        await self.accept(lid, reviewer)
+        with patch.object(bot, "role_is_safe_to_grant", return_value=True):
+            await self.accept(lid, reviewer)
         self.assertEqual(await self.balance(10), 5)
         self.assertIsNone(await self.balance(50))
         cand.add_roles.assert_awaited()
@@ -421,7 +432,7 @@ class AcceptRejectTests(BotTestCase):
         self.assertEqual(await self.scalar("SELECT status FROM logs WHERE id=?", (lid,)), "rejected")
         i2 = self.interaction(reviewer, message=msg)
         await modal.on_submit(i2)
-        self.assertIn("already", self.last_text(i2.followup.send))
+        self.assertIn("already", self.last_text(i2.followup.send).casefold())
 
     async def test_confirm_participation_rules(self):
         self.member(10)
@@ -431,15 +442,15 @@ class AcceptRejectTests(BotTestCase):
         lid = await self.insert_log(type_="war", data=data)
         view = bot.ReviewView()
         stranger = self.interaction(self.member(30), message=await self.review_message(lid))
-        await view.confirm_part(stranger, None)
-        self.assertIn("not listed", self.last_text(stranger.response.send_message))
+        await view.confirm_part.callback(stranger)
+        self.assertIn("not listed", self.last_text(stranger.response.send_message).casefold())
         tagged = self.interaction(self.member(20), message=await self.review_message(lid))
-        await view.confirm_part(tagged, None)
+        await view.confirm_part.callback(tagged)
         row = await bot.get_log(lid)
         self.assertEqual(json.loads(row["data"])["confirmed_participants"], [20])
         again = self.interaction(self.member(20), message=await self.review_message(lid))
-        await view.confirm_part(again, None)
-        self.assertIn("already", self.last_text(again.response.send_message))
+        await view.confirm_part.callback(again)
+        self.assertIn("already", self.last_text(again.response.send_message).casefold())
 
 
 # =====================================================================  الرتب
@@ -449,7 +460,8 @@ class RankTests(BotTestCase):
 
     async def test_promotion_adds_new_role_and_removes_old(self):
         m = self.member(10, roles=[self.lvl("Lvl. 20")])
-        role = await bot.update_member_rank(self.guild, m, 70)
+        with patch.object(bot, "role_is_safe_to_grant", return_value=True):
+            role = await bot.update_member_rank(self.guild, m, 70)
         self.assertEqual(role, self.lvl("Lvl. 40"))
         self.assertIn(self.lvl("Lvl. 40"), m.add_roles.await_args.args)
         self.assertIn(self.lvl("Lvl. 20"), m.remove_roles.await_args.args)
@@ -462,7 +474,8 @@ class RankTests(BotTestCase):
 
     async def test_explicit_demote_removes_rank(self):
         m = self.member(10, roles=[self.lvl("Lvl. 80")])
-        await bot.update_member_rank(self.guild, m, 10, allow_demote=True)
+        with patch.object(bot, "role_is_safe_to_grant", return_value=True):
+            await bot.update_member_rank(self.guild, m, 10, allow_demote=True)
         m.remove_roles.assert_awaited()
         self.assertIn(self.lvl("Lvl. 80"), m.remove_roles.await_args.args)
 
@@ -482,10 +495,10 @@ class RankTests(BotTestCase):
     async def test_set_rank_points_keeps_ladder_ordered(self):
         admin = self.member(1, admin=True)
         i = self.interaction(admin)
-        await bot.set_rank_points(i, choice("Lvl. 40"), 10)
+        await invoke(bot.set_rank_points, i, choice("Lvl. 40"), 10)
         self.assertIn("❌", self.last_text(i.response.send_message))
         i2 = self.interaction(admin)
-        await bot.set_rank_points(i2, choice("Lvl. 40"), 80)
+        await invoke(bot.set_rank_points, i2, choice("Lvl. 40"), 80)
         self.assertEqual(dict(await bot.get_ladder(self.GID))["Lvl. 40"], 80)
 
 
@@ -501,7 +514,7 @@ class LedgerTests(BotTestCase):
     async def test_revoke_appends_reversal_and_keeps_history(self):
         lid, reviewer = await self.accepted_log()
         i = self.interaction(reviewer)
-        await bot.revoke_log(i, lid, "cheating")
+        await invoke(bot.revoke_log, i, lid, "cheating")
         self.assertEqual(await self.balance(10), 0)
         self.assertEqual(await self.scalar("SELECT status FROM logs WHERE id=?", (lid,)), "revoked")
         self.assertEqual(await self.scalar("SELECT COUNT(*) FROM point_events WHERE log_id=?", (lid,)), 2)
@@ -510,38 +523,38 @@ class LedgerTests(BotTestCase):
 
     async def test_revoke_twice_is_blocked(self):
         lid, reviewer = await self.accepted_log()
-        await bot.revoke_log(self.interaction(reviewer), lid, "x")
+        await invoke(bot.revoke_log, self.interaction(reviewer), lid, "x")
         i2 = self.interaction(reviewer)
-        await bot.revoke_log(i2, lid, "x")
+        await invoke(bot.revoke_log, i2, lid, "x")
         self.assertIn("not found", self.last_text(i2.response.send_message))
         self.assertEqual(await self.balance(10), 0)
 
     async def test_revoke_requires_review_permission(self):
         lid, _ = await self.accepted_log()
         i = self.interaction(self.member(77))
-        await bot.revoke_log(i, lid, "x")
+        await invoke(bot.revoke_log, i, lid, "x")
         self.assertEqual(await self.balance(10), 8)
 
     async def test_revoke_from_old_season_is_blocked(self):
         lid, reviewer = await self.accepted_log()
         await bot.set_setting(self.GID, "state:current_season", "season_new")
         i = self.interaction(reviewer)
-        await bot.revoke_log(i, lid, "x")
-        self.assertIn("archived season", self.last_text(i.response.send_message))
+        await invoke(bot.revoke_log, i, lid, "x")
+        self.assertIn("previous season", self.last_text(i.response.send_message).casefold())
         self.assertEqual(await self.balance(10), 8)
 
     async def test_revoke_warns_when_rank_is_now_too_high(self):
         lid, reviewer = await self.accepted_log()
         self.members[10].roles = [self.lvl_roles[2]]  # Lvl. 60
         i = self.interaction(reviewer)
-        await bot.revoke_log(i, lid, "x")
+        await invoke(bot.revoke_log, i, lid, "x")
         self.assertIn("sync-ranks", self.last_text(i.followup.send))
 
     async def test_manual_points_are_ledgered_and_verified(self):
         admin = self.member(1, admin=True)
         m = self.member(10)
-        await bot.set_points(self.interaction(admin), m, 30)
-        await bot.set_points(self.interaction(admin), m, 12)
+        await invoke(bot.set_points, self.interaction(admin), m, 30)
+        await invoke(bot.set_points, self.interaction(admin), m, 12)
         self.assertEqual(await self.balance(10), 12)
         self.assertEqual(await self.scalar("SELECT SUM(points) FROM point_events WHERE user_id=10"), 12)
         self.assertEqual(await bot.ledger_mismatches(self.GID), [])
@@ -551,7 +564,7 @@ class LedgerTests(BotTestCase):
         await bot.db_exec("UPDATE members SET points=999 WHERE user_id=10")
         self.assertEqual(await bot.ledger_mismatches(self.GID), [(10, 999, 8)])
         admin = self.member(1, admin=True)
-        await bot.verify_points(self.interaction(admin), True)
+        await invoke(bot.verify_points, self.interaction(admin), True)
         self.assertEqual(await bot.ledger_mismatches(self.GID), [])
         self.assertEqual(await self.balance(10), 8)
 
@@ -560,22 +573,22 @@ class LedgerTests(BotTestCase):
         pending = await self.insert_log(author=11)
         admin = self.member(1, admin=True)
         i = self.interaction(admin)
-        await bot.season_reset(i, "Season 1", "RESET", False)
+        await invoke(bot.season_reset, i, "Season 1", "RESET", False)
         self.assertEqual(await self.balance(10), 0)
         self.assertEqual(await self.scalar("SELECT points FROM season_archive WHERE season='Season 1' AND user_id=10"), 8)
         self.assertEqual(await self.scalar("SELECT status FROM logs WHERE id=?", (pending,)), "rejected")
         self.assertNotEqual(await bot.get_current_season(self.GID), "main")
         self.assertEqual(await bot.ledger_mismatches(self.GID), [])
         i2 = self.interaction(admin)
-        await bot.season_reset(i2, "Season 1", "RESET", False)
+        await invoke(bot.season_reset, i2, "Season 1", "RESET", False)
         self.assertIn("already exists", self.last_text(i2.followup.send))
 
     async def test_season_reset_needs_confirmation_and_editor(self):
         i = self.interaction(self.member(1, admin=True))
-        await bot.season_reset(i, "S", "nope", False)
+        await invoke(bot.season_reset, i, "S", "nope", False)
         self.assertIn("RESET", self.last_text(i.response.send_message))
         i2 = self.interaction(self.member(2))
-        await bot.season_reset(i2, "S", "RESET", False)
+        await invoke(bot.season_reset, i2, "S", "RESET", False)
         self.assertEqual(await bot.get_current_season(self.GID), "main")
 
     def setUp(self):
@@ -646,7 +659,7 @@ class SubmissionTests(BotTestCase):
         self.assertIn("permission", self.last_text(i2.response.send_message))
         i3 = self.interaction(self.member(12))
         await bot.start_log(i3, "war", "win", [self.attachment()])
-        self.assertIn("at least 2", self.last_text(i3.response.send_message))
+        self.assertIn("requires 2 attachments", self.last_text(i3.response.send_message).casefold())
 
     async def test_invalid_youtube_link_is_refused_before_any_work(self):
         i = self.interaction(self.member(10))
@@ -658,27 +671,27 @@ class SubmissionTests(BotTestCase):
     async def test_tryout_candidate_must_be_someone_else(self):
         tester = self.member(10, roles=[self.role("Tryout Master", 9)])
         i = self.interaction(tester)
-        await bot.log_tryout(i, tester, choice("win"), self.attachment())
+        await invoke(bot.log_tryout, i, tester, choice("win"), self.attachment())
         self.assertIn("❌", self.last_text(i.response.send_message))
 
     async def test_resubmit_ownership_status_and_single_child(self):
-        author = self.member(10)
+        author = self.member(10, roles=[self.role("Commander", 5)])
         att = self.attachment()
         old_msg = self.message(555, "x", attachments=[att])
         self.review_ch.fetch_message = AsyncMock(return_value=old_msg)
         rejected = await self.insert_log(status="rejected", author=10)
 
         stranger = self.interaction(self.member(11))
-        await bot.resubmit(stranger, rejected)
-        self.assertIn("not yours", self.last_text(stranger.response.send_message))
+        await invoke(bot.resubmit, stranger, rejected)
+        self.assertIn("log not found", self.last_text(stranger.response.send_message).casefold())
 
         pending = await self.insert_log(status="pending", author=10)
         notrej = self.interaction(author)
-        await bot.resubmit(notrej, pending)
+        await invoke(bot.resubmit, notrej, pending)
         self.assertIn("not rejected", self.last_text(notrej.response.send_message))
 
         ok = self.interaction(author)
-        await bot.resubmit(ok, rejected)
+        await invoke(bot.resubmit, ok, rejected)
         ok.response.send_modal.assert_awaited()
         modal = ok.response.send_modal.await_args.args[0]
         self.assertEqual(modal.parent_id, rejected)
@@ -689,7 +702,7 @@ class SubmissionTests(BotTestCase):
         self.assertEqual(await self.scalar("SELECT COUNT(*) FROM logs WHERE parent_id=?", (rejected,)), 1)
 
         again = self.interaction(author)
-        await bot.resubmit(again, rejected)
+        await invoke(bot.resubmit, again, rejected)
         self.assertIn("already resubmitted", self.last_text(again.response.send_message))
 
 
@@ -699,17 +712,17 @@ class BackupTests(BotTestCase):
         full, dm = choice("full"), choice("owner")
         non_owner = self.interaction(self.member(5, admin=True))
         with patch.object(bot, "dm_owner", AsyncMock(return_value=True)) as dm_mock:
-            await bot.backup_cmd(non_owner, full, dm)
+            await invoke(bot.backup_cmd, non_owner, full, dm)
             self.assertIn("owner only", self.last_text(non_owner.response.send_message))
             dm_mock.assert_not_awaited()
 
             owner_chat = self.interaction(self.member(999))
-            await bot.backup_cmd(owner_chat, full, choice("chat"))
+            await invoke(bot.backup_cmd, owner_chat, full, choice("chat"))
             self.assertIn("owner's DM", self.last_text(owner_chat.response.send_message))
             dm_mock.assert_not_awaited()
 
             owner = self.interaction(self.member(999))
-            await bot.backup_cmd(owner, full, dm)
+            await invoke(bot.backup_cmd, owner, full, dm)
             dm_mock.assert_awaited_once()
             sent_file = dm_mock.await_args.kwargs["file"]
             self.assertTrue(sent_file.filename.startswith("crewbot-full-backup-"))
@@ -720,14 +733,14 @@ class BackupTests(BotTestCase):
         await self.insert_log(gid=self.GID)
         await self.insert_log(gid=2)
         admin = self.interaction(self.member(5, admin=True))
-        await bot.backup_cmd(admin, choice("today"), choice("chat"))
+        await invoke(bot.backup_cmd, admin, choice("today"), choice("chat"))
         sent = admin.followup.send.await_args.kwargs["file"]
         payload = json.loads(sent.fp.getvalue())
         self.assertEqual({row["guild_id"] for row in payload["logs"]}, {self.GID})
 
     async def test_non_editor_cannot_backup(self):
         i = self.interaction(self.member(6))
-        await bot.backup_cmd(i, choice("today"), choice("chat"))
+        await invoke(bot.backup_cmd, i, choice("today"), choice("chat"))
         self.assertIn("❌", self.last_text(i.response.send_message))
 
 
@@ -748,7 +761,7 @@ class MaintenanceTests(BotTestCase):
         review_msg = self.message(555, "x")
         self.review_ch.fetch_message = AsyncMock(return_value=review_msg)
         self.guild.id = self.GID
-        bot.bot.guilds = [self.guild]
+        bot.bot._connection._guilds = {self.GID: self.guild}
         await bot.run_reminders()
         review_msg.reply.assert_awaited_once()
         self.assertEqual(await self.scalar("SELECT reminded FROM logs WHERE id=?", (lid,)), 1)
@@ -761,19 +774,19 @@ class MaintenanceTests(BotTestCase):
         await self.insert_log(created=(bot.now_utc() - bot.timedelta(days=9)).isoformat())
         review_msg = self.message(555, "x")
         self.review_ch.fetch_message = AsyncMock(return_value=review_msg)
-        bot.bot.guilds = [self.guild]
+        bot.bot._connection._guilds = {self.GID: self.guild}
         await bot.run_reminders()
         review_msg.reply.assert_not_awaited()
 
     async def test_auto_backup_runs_once_per_cycle_and_only_to_owner(self):
-        bot.bot.guilds = [self.guild]
+        bot.bot._connection._guilds = {self.GID: self.guild}
         with patch.object(bot, "dm_owner", AsyncMock(return_value=True)) as dm:
             await bot.run_backup()
             await bot.run_backup()
             dm.assert_awaited_once()
 
     async def test_auto_backup_failure_is_not_retried_every_cycle(self):
-        bot.bot.guilds = [self.guild]
+        bot.bot._connection._guilds = {self.GID: self.guild}
         with patch.object(bot, "dm_owner", AsyncMock(return_value=False)) as dm:
             await bot.run_backup()
             await bot.run_backup()
@@ -788,21 +801,21 @@ class ReadCommandsTests(BotTestCase):
         reviewer = self.member(20, admin=True)
         lid = await self.insert_log()
         await bot.accept_log(self.interaction(reviewer, message=await self.review_message(lid)))
-        for cmd, args in ((bot.points_cmd, ()), (bot.profile, ()), (bot.rates, ()), (bot.stats, ())):
+        for cmd, args in ((bot.points_cmd, ()), (bot.profile_cmd, ()), (bot.rates_cmd, ()), (bot.stats_cmd, ())):
             i = self.interaction(self.members[10])
-            await cmd(i, *args)
+            await invoke(cmd, i, *args)
         i = self.interaction(self.members[10])
-        await bot.leaderboard(i, choice("week"))
-        self.assertIn("<@10>", self.last_text(i.response.send_message))
+        await invoke(bot.leaderboard_cmd, i, choice("week"))
+        self.assertIn("<@10>", i.response.send_message.await_args.kwargs["embed"].description)
         i2 = self.interaction(self.members[10])
-        await bot.leaderboard(i2, None)
-        self.assertIn("8 pts", self.last_text(i2.response.send_message))
+        await invoke(bot.leaderboard_cmd, i2, choice("all"))
+        self.assertIn("**8** pts", i2.response.send_message.await_args.kwargs["embed"].description)
 
     async def test_settings_command_renders_effective_values(self):
         i = self.interaction(self.member(1, admin=True))
-        await bot.settings_cmd(i)
+        await invoke(bot.settings_cmd, i)
         embed = i.response.send_message.await_args.kwargs["embed"]
-        self.assertTrue(any("<#600>" in value for _, value in embed.fields))
+        self.assertTrue(any("<#600>" in field.value for field in embed.fields))
 
 
 if __name__ == "__main__":
