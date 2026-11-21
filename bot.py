@@ -5835,7 +5835,7 @@ async def _queue_ai_action(ctx, name, args):
         )
     ctx.pending_confirmations.append(name)
     return (
-        f"OWNER APPROVAL REQUIRED: `{name}` لم يُنفّذ بعد. "
+        f"AUTHORIZED APPROVAL REQUIRED: `{name}` لم يُنفّذ بعد. "
         f"تم تسليم رسالة الموافقة بنجاح إلى: {', '.join(delivered_to)}. "
         "الموافقة أو الرفض من الأزرار فقط، وينتهي الطلب بعد 5 دقائق."
     )
