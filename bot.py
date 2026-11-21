@@ -30,6 +30,7 @@ from core.command_registry import CommandRegistry
 from core.database import Migration, run_migrations, validate_database_file
 from core.event_bus import EventBus
 from core.service_registry import ServiceRegistry
+from core.ai_approvals import approval_recipient_ids, batch_action_status
 
 load_dotenv()
 
@@ -5607,8 +5608,9 @@ async def _ai_finish_pending_action(guild, requester_id, approver_id, token, cha
                 if str(item_result).startswith(("DENIED", "Discord", "Action failed", "Tool failed", "Invalid", "Unknown")):
                     failures += 1
                 results.append(f"{index}. {item_name}: {str(item_result)[:220]}")
-            result = f"BATCH COMPLETED: {len(actions)-failures}/{len(actions)} actions succeeded; {failures} failed.\n" + "\n".join(results)
-            status = "completed" if failures == 0 else ("failed" if failures == len(actions) else "completed")
+            succeeded = len(actions) - failures
+            status = batch_action_status(succeeded, len(actions))
+            result = f"BATCH {status.upper()}: {succeeded}/{len(actions)} actions succeeded; {failures} failed.\n" + "\n".join(results)
         else:
             result = await _exec_ai_tool(confirmed_ctx, action_name, arguments)
             status = "completed" if str(result).startswith(_AI_TOOL_SUCCESS_PREFIXES) else "failed"
@@ -5619,7 +5621,7 @@ async def _ai_finish_pending_action(guild, requester_id, approver_id, token, cha
         await db.execute("UPDATE ai_pending_actions SET status=?,result=?,arguments='{}' WHERE id=? AND status='executing'", (status, str(result)[:1200], action_id))
         await db.commit()
     if status != "completed":
-        await _ai_audit(confirmed_ctx, f"failed:{action_name}", str(result)[:450])
+        await _ai_audit(confirmed_ctx, f"{status}:{action_name}", str(result)[:450])
     return status == "completed", str(result)[:1700]
 
 
@@ -5690,28 +5692,47 @@ class AIActionConfirmationView(discord.ui.View):
 
 
 async def _ai_approval_recipients(guild):
-    """Send high-impact AI action approvals only to the configured bot owner in DM.
+    """Resolve the bot owner, guild owner, and members of the configured approval role."""
+    if guild is None:
+        return {}
 
-    The internal UUID is an opaque database key, never a code the user must type.
-    The owner approves or rejects with the buttons in the private message.
-    """
     bot_owner_id = owner_id()
-    if not bot_owner_id:
-        return {}
-    try:
-        user = bot.get_user(bot_owner_id) or await bot.fetch_user(bot_owner_id)
-        if user is None:
-            print(f"❌ AI approval recipient lookup returned no user (configured OWNER_ID={bot_owner_id}).")
-            return {}
-        return {bot_owner_id: user}
-    except (discord.HTTPException, discord.NotFound) as exc:
-        print(
-            "❌ AI approval recipient lookup failed: "
-            f"configured_owner_id={bot_owner_id}; error={type(exc).__name__}; "
-            f"status={getattr(exc, 'status', 'n/a')}; code={getattr(exc, 'code', 'n/a')}"
-        )
-        return {}
+    approval_role_id = await _ai_approval_role_id(guild.id)
 
+    # The bot has the privileged members intent. Chunk an incomplete guild cache
+    # before reading role.members so configured approvers are not silently missed.
+    if approval_role_id and not getattr(guild, "chunked", True):
+        try:
+            await guild.chunk(cache=True)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(
+                "⚠️ AI approval role member cache could not be completed: "
+                f"guild_id={guild.id}; error={type(exc).__name__}; "
+                f"status={getattr(exc, 'status', 'n/a')}"
+            )
+
+    recipient_ids = approval_recipient_ids(guild, approval_role_id, bot_owner_id)
+    recipients = {}
+    for recipient_id in sorted(recipient_ids):
+        try:
+            recipient = guild.get_member(recipient_id) or bot.get_user(recipient_id)
+            if recipient is None:
+                recipient = await bot.fetch_user(recipient_id)
+            if recipient is not None:
+                recipients[recipient_id] = recipient
+        except (discord.HTTPException, discord.NotFound) as exc:
+            print(
+                "❌ AI approval recipient lookup failed: "
+                f"guild_id={guild.id}; recipient_id={recipient_id}; "
+                f"error={type(exc).__name__}; status={getattr(exc, 'status', 'n/a')}; "
+                f"code={getattr(exc, 'code', 'n/a')}"
+            )
+        except Exception as exc:
+            print(
+                "❌ Unexpected AI approval recipient lookup error: "
+                f"guild_id={guild.id}; recipient_id={recipient_id}; error={type(exc).__name__}"
+            )
+    return recipients
 
 async def _queue_ai_action(ctx, name, args):
     """Persist a short-lived proposal and DM all configured approvers."""
@@ -5758,7 +5779,7 @@ async def _queue_ai_action(ctx, name, args):
     preview = _ai_action_preview(name, args)
     embed = discord.Embed(
         title="طلب موافقة على إجراء AI",
-        description="إجراء عالي التأثير ولم يُنفّذ بعد. تم إرسال الطلب إلى مالك البوت في رسالة خاصة. الموافقة أو الرفض من الأزرار فقط؛ لا توجد أكواد أو أوامر تأكيد كتابية.",
+        description="إجراء عالي التأثير ولم يُنفّذ بعد. تم إرسال الطلب إلى مالك البوت ومالك السيرفر وأعضاء رتبة الموافقة المحددة في رسائل خاصة. الموافقة أو الرفض من الأزرار فقط؛ لا توجد أكواد أو أوامر تأكيد كتابية.",
         color=discord.Color.orange(), timestamp=now,
     )
     embed.add_field(name="السيرفر", value=_ai_safe_name(ctx.guild.name, 100) or "غير معروف", inline=False)
@@ -5807,7 +5828,7 @@ async def _queue_ai_action(ctx, name, args):
         await _ai_cancel_pending_action(ctx.guild.id, ctx.user.id, token)
         details = ", ".join(delivery_errors) or "recipient lookup failed"
         return (
-            "DENIED: تعذر تأكيد تسليم رسالة الموافقة إلى مالك البوت "
+            "DENIED: تعذر تأكيد تسليم رسالة الموافقة إلى أي من المستلمين المصرح لهم "
             f"({details}). تم إلغاء الطلب ولم يتم تنفيذ أي إجراء. "
             "تحقق من OWNER_ID وإعدادات الرسائل الخاصة."
         )
