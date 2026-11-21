@@ -5331,6 +5331,7 @@ _AI_TOOLS = [
     _ai_tool("server_report", "Create a server overview including counts and privileged roles."),
     _ai_tool("get_recent_ai_logs", "Read the latest AI action audit records.", {"limit": _I}),
     _ai_tool("get_server_audit_log", "Read recent Discord server audit log events. Controller only; bot needs View Audit Log.", {"limit": _I}),
+    _ai_tool("get_railway_runtime_logs", "Read recent Railway deployment runtime logs (stdout/stderr), distinct from Discord Audit Log. Requires RAILWAY_API_TOKEN and Railway project/service/environment IDs, or a deployment ID.", {"limit": _I, "filter": _S, "deployment_id": _S}, []),
     _ai_tool("list_member_warnings", "List stored warnings for a member.", {"member_query": _S}, ["member_query"]),
     _ai_tool("remember_user_fact", "Save a non-sensitive fact only when the user explicitly asked.", {"fact_key": _S, "fact_value": _S}, ["fact_key", "fact_value"]),
     _ai_tool("web_search", "Search the web for current information and return source URLs.", {"query": _S}, ["query"]),
@@ -6044,7 +6045,7 @@ async def _exec_ai_tool(ctx, name, args):
             return f"Workspace read failed: {type(exc).__name__}: {str(exc)[:180]}"
 
     # Read-only operational inspection tools. These never mutate Discord or the database.
-    if name in {"list_open_tickets", "list_server_events", "list_discord_scheduled_events", "list_automod_rules", "list_temp_voice_rooms", "get_security_status", "run_server_diagnostics"}:
+    if name in {"list_open_tickets", "list_server_events", "list_discord_scheduled_events", "list_automod_rules", "list_temp_voice_rooms", "get_security_status", "run_server_diagnostics", "get_railway_runtime_logs"}:
         if not await _ai_can_sensitive(ctx):
             return "DENIED: only the configured AI controller or server administrators can inspect operational and security details."
         if name == "list_open_tickets":
@@ -6060,6 +6061,77 @@ async def _exec_ai_tool(ctx, name, args):
                 member = guild.get_member(int(user_id))
                 lines.append(f"{channel.name if channel else 'Missing channel'} (channel {channel_id}) | owner: {member.display_name if member else 'Unknown member'} ({user_id})")
             return f"Open tickets: {len(rows)} (maximum 50 shown).\n" + ("\n".join(lines) or "No open tickets found.")
+        if name == "get_railway_runtime_logs":
+            token = os.getenv("RAILWAY_API_TOKEN", "").strip()
+            deployment_id = str(args.get("deployment_id") or os.getenv("RAILWAY_DEPLOYMENT_ID", "")).strip()
+            project_id = os.getenv("RAILWAY_PROJECT_ID", "").strip()
+            service_id = os.getenv("RAILWAY_SERVICE_ID", "").strip()
+            environment_id = os.getenv("RAILWAY_ENVIRONMENT_ID", "").strip()
+            if not token:
+                return "Railway runtime logs are not configured: set RAILWAY_API_TOKEN in Railway Variables. No credential value is needed in chat."
+            limit = max(1, min(200, int(args.get("limit", 50) or 50)))
+            filter_text = str(args.get("filter", "")).strip()[:200]
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            timeout = aiohttp.ClientTimeout(total=25)
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                if not deployment_id:
+                    if not all((project_id, service_id, environment_id)):
+                        return "Railway runtime logs are not configured: set RAILWAY_PROJECT_ID, RAILWAY_SERVICE_ID, and RAILWAY_ENVIRONMENT_ID, or provide a deployment_id."
+                    deployment_query = (
+                        "query deployments($input: DeploymentListInput!, $first: Int) { "
+                        "deployments(input: $input, first: $first) { edges { node { id status createdAt } } } }"
+                    )
+                    variables = {"input": {"projectId": project_id, "serviceId": service_id, "environmentId": environment_id}, "first": 5}
+                    async with session.post(
+                        "https://backboard.railway.com/graphql/v2",
+                        json={"query": deployment_query, "variables": variables},
+                    ) as response:
+                        payload = await response.json(content_type=None)
+                        if response.status >= 400 or payload.get("errors"):
+                            return "Railway API could not list deployments. Check token access and configured project/service/environment IDs."
+                    edges = ((payload.get("data") or {}).get("deployments") or {}).get("edges") or []
+                    deployments = [edge.get("node") or {} for edge in edges]
+                    if not deployments:
+                        return "Railway returned no deployments for the configured service and environment."
+                    selected = next((item for item in deployments if item.get("status") == "SUCCESS"), deployments[0])
+                    deployment_id = str(selected.get("id") or "").strip()
+                    if not deployment_id:
+                        return "Railway returned a deployment without an ID."
+                logs_query = (
+                    "query deploymentLogs($deploymentId: String!, $limit: Int, $filter: String) { "
+                    "deploymentLogs(deploymentId: $deploymentId, limit: $limit, filter: $filter) "
+                    "{ timestamp message severity } }"
+                )
+                variables = {"deploymentId": deployment_id, "limit": limit}
+                if filter_text:
+                    variables["filter"] = filter_text
+                async with session.post(
+                    "https://backboard.railway.com/graphql/v2",
+                    json={"query": logs_query, "variables": variables},
+                ) as response:
+                    payload = await response.json(content_type=None)
+                    if response.status >= 400 or payload.get("errors"):
+                        return "Railway API could not retrieve runtime logs. Check token permissions, deployment ID, and API availability."
+            rows = (payload.get("data") or {}).get("deploymentLogs") or []
+            if not rows:
+                return f"No Railway runtime log entries were returned for deployment {deployment_id}."
+            safe_rows = []
+            for item in rows[:limit]:
+                message = str(item.get("message") or "")
+                message = re.sub(
+                    r"(?i)(token|password|secret|api[_-]?key)\\s*[:=]\\s*[^\\s,;]+",
+                    r"\\1=[REDACTED]",
+                    message,
+                )
+                if _ai_contains_secret_material(message):
+                    message = "[REDACTED: log line matched credential/secret detection]"
+                timestamp = str(item.get("timestamp") or "unknown")[:40]
+                severity = str(item.get("severity") or "info")[:20]
+                safe_rows.append(f"{timestamp} [{severity}] {message[:700]}")
+            return (
+                f"Railway deployment runtime logs (stdout/stderr) | deployment={deployment_id} | entries={len(safe_rows)}\n"
+                + "\n".join(safe_rows)
+            )[:14000]
         if name == "list_discord_scheduled_events":
             limit = max(1, min(30, int(args.get("limit", 10) or 10)))
             try:
@@ -6913,7 +6985,7 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
         "Server-changing tools are authorized only after the application checks the configured AI-controller role or server-admin access. "
         "ACTION APPROVAL POLICY: ordinary bounded actions execute immediately after authorization and Discord permission/hierarchy checks. High-impact/destructive actions require a real pending database record and at least one successfully delivered DM to the guild owner, bot owner, or configured approval-role members. Multiple high-impact actions in one request are combined into one batch of up to 50 actions. Only an authorized recipient can approve or reject using the DM buttons. If DM delivery fails, the pending request is cancelled and no action executes. Never claim a request is sent, pending, approved, or completed unless the application result confirms it. "
         "ORDINARY ACTIONS (no owner approval): create/edit/move/lock/unlock text, voice, forum and stage channels, set channel access within the supported permission list, set slowmode, create ordinary roles, rename/recolor/reposition roles, assign/remove non-privileged roles, set nicknames, warn/timeout/untimeout members, create/edit native Discord scheduled events, send messages/files/logs, and write a text file inside the restricted AI workspace. Sensitive role grants are not ordinary. "
-        "READ-ONLY CAPABILITIES: inspect member profiles and points, list roles/channels/role members, inspect channel details and permission overwrites, view server overview, read AI action logs, read permitted Discord Audit Log events, read stored warning history, inspect open support tickets, inspect DragonSlayerBot event posts, inspect native Discord scheduled events and attendance counts, inspect native Discord AutoMod rules, inspect tracked temporary voice rooms, inspect anti-raid settings and recent security incident counts, run read-only server/bot permission diagnostics, search the web when configured, and inspect supported attachments supplied in the current request. "
+        "READ-ONLY CAPABILITIES: inspect member profiles and points, list roles/channels/role members, inspect channel details and permission overwrites, view server overview, read AI action logs, read permitted Discord Audit Log events, read Railway deployment runtime logs when Railway API credentials and IDs are configured, read stored warning history, inspect open support tickets, inspect DragonSlayerBot event posts, inspect native Discord scheduled events and attendance counts, inspect native Discord AutoMod rules, inspect tracked temporary voice rooms, inspect anti-raid settings and recent security incident counts, run read-only server/bot permission diagnostics, search the web when configured, and inspect supported attachments supplied in the current request. "
         "NEVER request, reveal, print, or transmit API keys, Discord tokens, passwords, session secrets, credentials, private environment variables, or secret material. Never read .env files, databases, or arbitrary host files. Workspace access is limited to the configured AI workspace and .txt/.md/.json/.csv/.log files, with a 100 KB per-file limit, path restrictions and secret scanning. Do not run arbitrary code, shell commands, or SQL. "
         "The AI controller role grants authority to issue AI requests even if it is lower than the bot role; this does not bypass Discord API permissions, channel overwrites, or the bot's highest-role hierarchy. The bot cannot manage the server owner, itself, managed roles, the default @everyone role, or members/roles at or above its hierarchy. It cannot bypass Discord restrictions or grant itself permissions. "
         "The current tools do NOT provide mass kick/ban of all members, mass deletion of all channels, unrestricted server purge, arbitrary direct-DM sending, arbitrary external filesystem access, direct database access, role/member actions outside the current server, or unsupported server settings. Do not claim these are available. Message deletion is capped at 100 recent messages per tool call. Category deletion preserves child channels by moving them out unless delete_children=true is explicitly requested and approved. Server audit logs can be exported to the current, configured log, or configured panel channel. The panel channel is configured by an administrator. Channel permission edits are limited to view_channel, send_messages, read_message_history, connect, speak, attach_files, and embed_links. Server settings are limited to name, description, verification level, default notifications, and AFK timeout; server region is not supported by the current Discord API. "
