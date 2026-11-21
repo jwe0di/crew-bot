@@ -5398,125 +5398,6 @@ def _ai_requires_owner_approval(guild, name, args):
     if name in _AI_OWNER_APPROVAL_TOOLS:
         return True
     sensitive_flags = set(SENSITIVE_ROLE_PERMISSION_FLAGS)
-    if name in {"create_discord_scheduled_event", "edit_discord_scheduled_event", "delete_discord_scheduled_event"}:
-        if not me or not me.guild_permissions.manage_events:
-            return "DENIED: bot needs Manage Events permission."
-        try:
-            if name == "create_discord_scheduled_event":
-                event_name = _ai_safe_name(args.get("name"), 100)
-                location = _ai_safe_name(args.get("location"), 100)
-                if not event_name or not location:
-                    return "DENIED: event name and external location are required."
-                start_raw = str(args.get("start_time", "")).strip().replace("Z", "+00:00")
-                end_raw = str(args.get("end_time", "")).strip().replace("Z", "+00:00")
-                start_time = dt.datetime.fromisoformat(start_raw)
-                end_time = dt.datetime.fromisoformat(end_raw)
-                if start_time.tzinfo is None or end_time.tzinfo is None:
-                    return "DENIED: start_time and end_time must include an explicit timezone offset (ISO-8601)."
-                if start_time <= now_utc() or end_time <= start_time:
-                    return "DENIED: event must start in the future and end after it starts."
-                description = str(args.get("description", "")).strip()[:1000] or None
-                created = await guild.create_scheduled_event(
-                    name=event_name, start_time=start_time, end_time=end_time,
-                    privacy_level=discord.PrivacyLevel.guild_only,
-                    entity_type=discord.EntityType.external, location=location,
-                    description=description, reason=reason,
-                )
-                await _ai_audit(ctx, name, f"Created native Discord scheduled event {created.id} ({event_name})")
-                return f"Created native Discord scheduled event {event_name} (ID {created.id})."
-            event_id = str(args.get("event_id", "")).strip()
-            if not event_id.isdigit():
-                return "DENIED: event_id must be a numeric Discord event ID."
-            events = await guild.fetch_scheduled_events(with_counts=True)
-            event = next((item for item in events if item.id == int(event_id)), None)
-            if event is None:
-                return "Native Discord scheduled event not found."
-            if name == "delete_discord_scheduled_event":
-                event_name = event.name
-                await event.delete(reason=reason)
-                await _ai_audit(ctx, name, f"Deleted native Discord scheduled event {event.id} ({event_name})")
-                return f"Deleted native Discord scheduled event {event_name}."
-            changes = {}
-            new_name = _ai_safe_name(args.get("name"), 100)
-            description = str(args.get("description", "")).strip()
-            if new_name:
-                changes["name"] = new_name
-            if description:
-                changes["description"] = description[:1000]
-            if args.get("start_time"):
-                value = dt.datetime.fromisoformat(str(args["start_time"]).strip().replace("Z", "+00:00"))
-                if value.tzinfo is None:
-                    return "DENIED: start_time must include an explicit timezone offset."
-                changes["start_time"] = value
-            if args.get("end_time"):
-                value = dt.datetime.fromisoformat(str(args["end_time"]).strip().replace("Z", "+00:00"))
-                if value.tzinfo is None:
-                    return "DENIED: end_time must include an explicit timezone offset."
-                changes["end_time"] = value
-            location = _ai_safe_name(args.get("location"), 100)
-            if location:
-                changes["location"] = location
-            if not changes:
-                return "No event changes supplied."
-            await event.edit(reason=reason, **changes)
-            await _ai_audit(ctx, name, f"Edited native Discord scheduled event {event.id}: {', '.join(changes)}")
-            return f"Updated native Discord scheduled event {event.name}."
-        except (ValueError, TypeError) as exc:
-            return f"DENIED: invalid event data ({type(exc).__name__})."
-
-    if name in {"create_automod_keyword_rule", "edit_automod_rule", "delete_automod_rule"}:
-        if not me or not me.guild_permissions.manage_guild:
-            return "DENIED: bot needs Manage Server permission for AutoMod."
-        try:
-            rules = await guild.fetch_automod_rules()
-            if name == "create_automod_keyword_rule":
-                rule_name = _ai_safe_name(args.get("name"), 100)
-                keywords = args.get("keywords")
-                if not rule_name or not isinstance(keywords, list):
-                    return "DENIED: provide a rule name and keyword list."
-                clean_keywords = []
-                for item in keywords[:100]:
-                    keyword = str(item).strip()[:60]
-                    if keyword and keyword not in clean_keywords:
-                        clean_keywords.append(keyword)
-                if not clean_keywords:
-                    return "DENIED: at least one non-empty keyword is required."
-                trigger = discord.AutoModTrigger(
-                    type=discord.AutoModRuleTriggerType.keyword,
-                    keyword_filter=clean_keywords,
-                )
-                actions = [discord.AutoModRuleAction(type=discord.AutoModRuleActionType.block_message)]
-                created = await guild.create_automod_rule(
-                    name=rule_name, event_type=discord.AutoModRuleEventType.message_send,
-                    trigger=trigger, actions=actions, enabled=bool(args.get("enabled", True)), reason=reason,
-                )
-                await _ai_audit(ctx, name, f"Created native AutoMod keyword rule {created.id} ({rule_name})")
-                return f"Created AutoMod keyword rule {rule_name} (ID {created.id}); matching messages are blocked."
-            rule_id = str(args.get("rule_id", "")).strip()
-            if not rule_id.isdigit():
-                return "DENIED: rule_id must be a numeric Discord AutoMod rule ID."
-            rule_item = next((item for item in rules if item.id == int(rule_id)), None)
-            if rule_item is None:
-                return "AutoMod rule not found."
-            if name == "delete_automod_rule":
-                rule_name = rule_item.name
-                await rule_item.delete(reason=reason)
-                await _ai_audit(ctx, name, f"Deleted native AutoMod rule {rule_item.id} ({rule_name})")
-                return f"Deleted AutoMod rule {rule_name}."
-            changes = {}
-            new_name = _ai_safe_name(args.get("name"), 100)
-            if new_name:
-                changes["name"] = new_name
-            if args.get("enabled") is not None:
-                changes["enabled"] = bool(args["enabled"])
-            if not changes:
-                return "No AutoMod rule changes supplied."
-            await rule_item.edit(reason=reason, **changes)
-            await _ai_audit(ctx, name, f"Edited native AutoMod rule {rule_item.id}: {', '.join(changes)}")
-            return f"Updated AutoMod rule {rule_item.name}."
-        except (ValueError, TypeError) as exc:
-            return f"DENIED: invalid AutoMod data ({type(exc).__name__})."
-
     if name == "create_role":
         permissions = args.get("permissions") or {}
         return isinstance(permissions, dict) and any(
@@ -6472,6 +6353,125 @@ async def _exec_ai_tool(ctx, name, args):
     if not me:
         return "DENIED: bot member data is unavailable."
     reason = f"AI controller request by {ctx.user} ({ctx.user.id})"
+
+    if name in {"create_discord_scheduled_event", "edit_discord_scheduled_event", "delete_discord_scheduled_event"}:
+        if not me or not me.guild_permissions.manage_events:
+            return "DENIED: bot needs Manage Events permission."
+        try:
+            if name == "create_discord_scheduled_event":
+                event_name = _ai_safe_name(args.get("name"), 100)
+                location = _ai_safe_name(args.get("location"), 100)
+                if not event_name or not location:
+                    return "DENIED: event name and external location are required."
+                start_raw = str(args.get("start_time", "")).strip().replace("Z", "+00:00")
+                end_raw = str(args.get("end_time", "")).strip().replace("Z", "+00:00")
+                start_time = dt.datetime.fromisoformat(start_raw)
+                end_time = dt.datetime.fromisoformat(end_raw)
+                if start_time.tzinfo is None or end_time.tzinfo is None:
+                    return "DENIED: start_time and end_time must include an explicit timezone offset (ISO-8601)."
+                if start_time <= now_utc() or end_time <= start_time:
+                    return "DENIED: event must start in the future and end after it starts."
+                description = str(args.get("description", "")).strip()[:1000] or None
+                created = await guild.create_scheduled_event(
+                    name=event_name, start_time=start_time, end_time=end_time,
+                    privacy_level=discord.PrivacyLevel.guild_only,
+                    entity_type=discord.EntityType.external, location=location,
+                    description=description, reason=reason,
+                )
+                await _ai_audit(ctx, name, f"Created native Discord scheduled event {created.id} ({event_name})")
+                return f"Created native Discord scheduled event {event_name} (ID {created.id})."
+            event_id = str(args.get("event_id", "")).strip()
+            if not event_id.isdigit():
+                return "DENIED: event_id must be a numeric Discord event ID."
+            events = await guild.fetch_scheduled_events(with_counts=True)
+            event = next((item for item in events if item.id == int(event_id)), None)
+            if event is None:
+                return "Native Discord scheduled event not found."
+            if name == "delete_discord_scheduled_event":
+                event_name = event.name
+                await event.delete(reason=reason)
+                await _ai_audit(ctx, name, f"Deleted native Discord scheduled event {event.id} ({event_name})")
+                return f"Deleted native Discord scheduled event {event_name}."
+            changes = {}
+            new_name = _ai_safe_name(args.get("name"), 100)
+            description = str(args.get("description", "")).strip()
+            if new_name:
+                changes["name"] = new_name
+            if description:
+                changes["description"] = description[:1000]
+            if args.get("start_time"):
+                value = dt.datetime.fromisoformat(str(args["start_time"]).strip().replace("Z", "+00:00"))
+                if value.tzinfo is None:
+                    return "DENIED: start_time must include an explicit timezone offset."
+                changes["start_time"] = value
+            if args.get("end_time"):
+                value = dt.datetime.fromisoformat(str(args["end_time"]).strip().replace("Z", "+00:00"))
+                if value.tzinfo is None:
+                    return "DENIED: end_time must include an explicit timezone offset."
+                changes["end_time"] = value
+            location = _ai_safe_name(args.get("location"), 100)
+            if location:
+                changes["location"] = location
+            if not changes:
+                return "No event changes supplied."
+            await event.edit(reason=reason, **changes)
+            await _ai_audit(ctx, name, f"Edited native Discord scheduled event {event.id}: {', '.join(changes)}")
+            return f"Updated native Discord scheduled event {event.name}."
+        except (ValueError, TypeError) as exc:
+            return f"DENIED: invalid event data ({type(exc).__name__})."
+
+    if name in {"create_automod_keyword_rule", "edit_automod_rule", "delete_automod_rule"}:
+        if not me or not me.guild_permissions.manage_guild:
+            return "DENIED: bot needs Manage Server permission for AutoMod."
+        try:
+            rules = await guild.fetch_automod_rules()
+            if name == "create_automod_keyword_rule":
+                rule_name = _ai_safe_name(args.get("name"), 100)
+                keywords = args.get("keywords")
+                if not rule_name or not isinstance(keywords, list):
+                    return "DENIED: provide a rule name and keyword list."
+                clean_keywords = []
+                for item in keywords[:100]:
+                    keyword = str(item).strip()[:60]
+                    if keyword and keyword not in clean_keywords:
+                        clean_keywords.append(keyword)
+                if not clean_keywords:
+                    return "DENIED: at least one non-empty keyword is required."
+                trigger = discord.AutoModTrigger(
+                    type=discord.AutoModRuleTriggerType.keyword,
+                    keyword_filter=clean_keywords,
+                )
+                actions = [discord.AutoModRuleAction(type=discord.AutoModRuleActionType.block_message)]
+                created = await guild.create_automod_rule(
+                    name=rule_name, event_type=discord.AutoModRuleEventType.message_send,
+                    trigger=trigger, actions=actions, enabled=bool(args.get("enabled", True)), reason=reason,
+                )
+                await _ai_audit(ctx, name, f"Created native AutoMod keyword rule {created.id} ({rule_name})")
+                return f"Created AutoMod keyword rule {rule_name} (ID {created.id}); matching messages are blocked."
+            rule_id = str(args.get("rule_id", "")).strip()
+            if not rule_id.isdigit():
+                return "DENIED: rule_id must be a numeric Discord AutoMod rule ID."
+            rule_item = next((item for item in rules if item.id == int(rule_id)), None)
+            if rule_item is None:
+                return "AutoMod rule not found."
+            if name == "delete_automod_rule":
+                rule_name = rule_item.name
+                await rule_item.delete(reason=reason)
+                await _ai_audit(ctx, name, f"Deleted native AutoMod rule {rule_item.id} ({rule_name})")
+                return f"Deleted AutoMod rule {rule_name}."
+            changes = {}
+            new_name = _ai_safe_name(args.get("name"), 100)
+            if new_name:
+                changes["name"] = new_name
+            if args.get("enabled") is not None:
+                changes["enabled"] = bool(args["enabled"])
+            if not changes:
+                return "No AutoMod rule changes supplied."
+            await rule_item.edit(reason=reason, **changes)
+            await _ai_audit(ctx, name, f"Edited native AutoMod rule {rule_item.id}: {', '.join(changes)}")
+            return f"Updated AutoMod rule {rule_item.name}."
+        except (ValueError, TypeError) as exc:
+            return f"DENIED: invalid AutoMod data ({type(exc).__name__})."
 
     if name == "create_role":
         if not me.guild_permissions.manage_roles:
