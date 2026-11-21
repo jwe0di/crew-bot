@@ -806,7 +806,7 @@ async def _dashboard_page_embed(guild: discord.Guild, page: str, bot: discord.Cl
 
 class DashboardPageSelect(discord.ui.Select):
     def __init__(self):
-        options = [discord.SelectOption(label=label, value=key, emoji=emoji, default=(key == "overview")) for key, (label, emoji) in DASHBOARD_PAGES.items()]
+        options = [discord.SelectOption(label=label, value=key, default=(key == "overview")) for key, (label, emoji) in DASHBOARD_PAGES.items()]
         super().__init__(placeholder="Navigate dashboard pagesâ¦", min_values=1, max_values=1, options=options, custom_id="dragon:admin_dashboard:page")
 
     async def callback(self, interaction: discord.Interaction):
@@ -835,7 +835,7 @@ class UndoConfirmView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Confirm undo", style=discord.ButtonStyle.danger, emoji="â©ï¸")
+    @discord.ui.button(label="Confirm undo", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         result = await _undo_last(interaction)
@@ -953,25 +953,25 @@ class DashboardView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="ð", row=1)
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, row=1)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.authorize(interaction):
             return
         await interaction.response.edit_message(embed=await _dashboard_page_embed(interaction.guild, self.current_page, interaction.client), view=self)
 
-    @discord.ui.button(label="Undo last action", style=discord.ButtonStyle.danger, emoji="â©ï¸", row=1)
+    @discord.ui.button(label="Undo last action", style=discord.ButtonStyle.danger, row=1)
     async def undo(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.authorize(interaction):
             return
         await interaction.response.send_message("ØªØ£ÙÙØ¯ Ø§ÙØªØ±Ø§Ø¬Ø¹ Ø¹Ù Ø¢Ø®Ø± Ø¥Ø¬Ø±Ø§Ø¡ ÙØ¯Ø¹ÙÙ ÙÙØ³Ø¬Ù. Ø±Ø§Ø¬Ø¹ Ø³Ø¬Ù Ø§ÙØ¥Ø¬Ø±Ø§Ø¡Ø§Øª ÙØ¨Ù Ø§ÙØªØ£ÙÙØ¯.", view=UndoConfirmView(self.guild_id, self.owner_id), ephemeral=True)
 
-    @discord.ui.button(label="AI insights", style=discord.ButtonStyle.secondary, emoji="ð§ ", row=1)
+    @discord.ui.button(label="AI insights", style=discord.ButtonStyle.secondary, row=1)
     async def ai_insights(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.authorize(interaction):
             return
         await _send_dashboard_ai_insights(interaction)
 
-    @discord.ui.button(label="AI server builder", style=discord.ButtonStyle.success, emoji="ð ï¸", row=2)
+    @discord.ui.button(label="AI server builder", style=discord.ButtonStyle.success, row=2)
     async def ai_server_builder(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.authorize(interaction):
             return
