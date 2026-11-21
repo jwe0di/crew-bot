@@ -109,6 +109,7 @@ class BotTestCase(unittest.IsolatedAsyncioTestCase):
         m.guild = self.guild
         m.add_roles, m.remove_roles, m.send = AsyncMock(), AsyncMock(), AsyncMock()
         m.display_avatar = SimpleNamespace(url="http://x")
+        m.color = discord.Color.default()
         self.members[uid] = m
         return m
 
@@ -302,7 +303,7 @@ class PermissionTests(BotTestCase):
         self.assertTrue(await bot.check_cmd_perm(self.interaction(plain), "rates"))
 
     async def test_editor_and_owner(self):
-        commander = self.member(1, roles=[self.role("~DS | Commander", 5)])
+        commander = self.member(1, roles=[self.role("Commander", 5)])
         nobody = self.member(2)
         owner = self.member(999)
         self.assertTrue(await bot.is_editor(commander))
@@ -431,7 +432,7 @@ class AcceptRejectTests(BotTestCase):
         self.assertEqual(await self.scalar("SELECT status FROM logs WHERE id=?", (lid,)), "rejected")
         i2 = self.interaction(reviewer, message=msg)
         await modal.on_submit(i2)
-        self.assertIn("already", self.last_text(i2.followup.send))
+        self.assertIn("already", self.last_text(i2.followup.send).casefold())
 
     async def test_confirm_participation_rules(self):
         self.member(10)
@@ -441,14 +442,14 @@ class AcceptRejectTests(BotTestCase):
         lid = await self.insert_log(type_="war", data=data)
         view = bot.ReviewView()
         stranger = self.interaction(self.member(30), message=await self.review_message(lid))
-        await view.confirm_part.callback(stranger, None)
+        await view.confirm_part.callback(stranger)
         self.assertIn("not listed", self.last_text(stranger.response.send_message))
         tagged = self.interaction(self.member(20), message=await self.review_message(lid))
-        await view.confirm_part.callback(tagged, None)
+        await view.confirm_part.callback(tagged)
         row = await bot.get_log(lid)
         self.assertEqual(json.loads(row["data"])["confirmed_participants"], [20])
         again = self.interaction(self.member(20), message=await self.review_message(lid))
-        await view.confirm_part.callback(again, None)
+        await view.confirm_part.callback(again)
         self.assertIn("already", self.last_text(again.response.send_message))
 
 
@@ -538,7 +539,7 @@ class LedgerTests(BotTestCase):
         lid, reviewer = await self.accepted_log()
         await bot.set_setting(self.GID, "state:current_season", "season_new")
         i = self.interaction(reviewer)
-        await bot.revoke_log(i, lid, "x")
+        await invoke(bot.revoke_log, i, lid, "x")
         self.assertIn("archived season", self.last_text(i.response.send_message))
         self.assertEqual(await self.balance(10), 8)
 
@@ -546,7 +547,7 @@ class LedgerTests(BotTestCase):
         lid, reviewer = await self.accepted_log()
         self.members[10].roles = [self.lvl_roles[2]]  # Lvl. 60
         i = self.interaction(reviewer)
-        await bot.revoke_log(i, lid, "x")
+        await invoke(bot.revoke_log, i, lid, "x")
         self.assertIn("sync-ranks", self.last_text(i.followup.send))
 
     async def test_manual_points_are_ledgered_and_verified(self):
@@ -658,7 +659,7 @@ class SubmissionTests(BotTestCase):
         self.assertIn("permission", self.last_text(i2.response.send_message))
         i3 = self.interaction(self.member(12))
         await bot.start_log(i3, "war", "win", [self.attachment()])
-        self.assertIn("at least 2", self.last_text(i3.response.send_message))
+        self.assertIn("requires 2 attachments", self.last_text(i3.response.send_message).casefold())
 
     async def test_invalid_youtube_link_is_refused_before_any_work(self):
         i = self.interaction(self.member(10))
@@ -674,7 +675,7 @@ class SubmissionTests(BotTestCase):
         self.assertIn("❌", self.last_text(i.response.send_message))
 
     async def test_resubmit_ownership_status_and_single_child(self):
-        author = self.member(10)
+        author = self.member(10, roles=[self.role("Commander", 5)])
         att = self.attachment()
         old_msg = self.message(555, "x", attachments=[att])
         self.review_ch.fetch_message = AsyncMock(return_value=old_msg)
@@ -682,7 +683,7 @@ class SubmissionTests(BotTestCase):
 
         stranger = self.interaction(self.member(11))
         await invoke(bot.resubmit, stranger, rejected)
-        self.assertIn("not yours", self.last_text(stranger.response.send_message))
+        self.assertIn("log not found", self.last_text(stranger.response.send_message).casefold())
 
         pending = await self.insert_log(status="pending", author=10)
         notrej = self.interaction(author)
@@ -773,19 +774,19 @@ class MaintenanceTests(BotTestCase):
         await self.insert_log(created=(bot.now_utc() - bot.timedelta(days=9)).isoformat())
         review_msg = self.message(555, "x")
         self.review_ch.fetch_message = AsyncMock(return_value=review_msg)
-        bot.bot.guilds = [self.guild]
+        bot.bot._connection._guilds = {self.GID: self.guild}
         await bot.run_reminders()
         review_msg.reply.assert_not_awaited()
 
     async def test_auto_backup_runs_once_per_cycle_and_only_to_owner(self):
-        bot.bot.guilds = [self.guild]
+        bot.bot._connection._guilds = {self.GID: self.guild}
         with patch.object(bot, "dm_owner", AsyncMock(return_value=True)) as dm:
             await bot.run_backup()
             await bot.run_backup()
             dm.assert_awaited_once()
 
     async def test_auto_backup_failure_is_not_retried_every_cycle(self):
-        bot.bot.guilds = [self.guild]
+        bot.bot._connection._guilds = {self.GID: self.guild}
         with patch.object(bot, "dm_owner", AsyncMock(return_value=False)) as dm:
             await bot.run_backup()
             await bot.run_backup()
@@ -814,7 +815,7 @@ class ReadCommandsTests(BotTestCase):
         i = self.interaction(self.member(1, admin=True))
         await invoke(bot.settings_cmd, i)
         embed = i.response.send_message.await_args.kwargs["embed"]
-        self.assertTrue(any("<#600>" in value for _, value in embed.fields))
+        self.assertTrue(any("<#600>" in field.value for field in embed.fields))
 
 
 if __name__ == "__main__":
