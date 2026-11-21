@@ -443,7 +443,7 @@ class AcceptRejectTests(BotTestCase):
         view = bot.ReviewView()
         stranger = self.interaction(self.member(30), message=await self.review_message(lid))
         await view.confirm_part.callback(stranger)
-        self.assertIn("not listed", self.last_text(stranger.response.send_message))
+        self.assertIn("not listed", self.last_text(stranger.response.send_message).casefold())
         tagged = self.interaction(self.member(20), message=await self.review_message(lid))
         await view.confirm_part.callback(tagged)
         row = await bot.get_log(lid)
@@ -540,7 +540,7 @@ class LedgerTests(BotTestCase):
         await bot.set_setting(self.GID, "state:current_season", "season_new")
         i = self.interaction(reviewer)
         await invoke(bot.revoke_log, i, lid, "x")
-        self.assertIn("archived season", self.last_text(i.response.send_message))
+        self.assertIn("previous season", self.last_text(i.response.send_message).casefold())
         self.assertEqual(await self.balance(10), 8)
 
     async def test_revoke_warns_when_rank_is_now_too_high(self):
@@ -806,7 +806,7 @@ class ReadCommandsTests(BotTestCase):
             await invoke(cmd, i, *args)
         i = self.interaction(self.members[10])
         await invoke(bot.leaderboard_cmd, i, choice("week"))
-        self.assertIn("<@10>", self.last_text(i.response.send_message))
+        self.assertIn("<@10>", i.response.send_message.await_args.kwargs["embed"].description)
         i2 = self.interaction(self.members[10])
         await invoke(bot.leaderboard_cmd, i2, None)
         self.assertIn("8 pts", self.last_text(i2.response.send_message))
