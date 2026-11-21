@@ -5586,8 +5586,8 @@ async def _ai_finish_pending_action(guild, requester_id, approver_id, token, cha
             confirmed_ctx.channel = resolved_channel
         if action_name == "batch_action":
             actions = arguments.get("actions")
-            if not isinstance(actions, list) or not 2 <= len(actions) <= 20:
-                raise ValueError("Batch must contain between 2 and 20 actions")
+            if not isinstance(actions, list) or not 2 <= len(actions) <= 50:
+                raise ValueError("Batch must contain between 2 and 50 actions")
             results = []
             failures = 0
             for index, item in enumerate(actions, 1):
@@ -5609,7 +5609,7 @@ async def _ai_finish_pending_action(guild, requester_id, approver_id, token, cha
                     item_result = f"Discord API error: {exc.status}."
                 except Exception as exc:
                     item_result = f"Action failed: {type(exc).__name__}."
-                if str(item_result).startswith(("DENIED", "Discord", "Action failed", "Tool failed", "Invalid", "Unknown")):
+                if str(item_result).startswith(("DENIED", "PARTIAL", "Discord", "Action failed", "Tool failed", "Invalid", "Unknown")):
                     failures += 1
                 results.append(f"{index}. {item_name}: {str(item_result)[:220]}")
             succeeded = len(actions) - failures
