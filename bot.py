@@ -6079,7 +6079,7 @@ async def _exec_ai_tool(ctx, name, args):
 
     # Sending messages/files is restricted to the controller, and attachment forwarding
     # can only use a file attached to this exact request.
-    if name in {"send_message", "send_file", "send_attachment", "send_log"}:
+    if name in {"send_message", "send_file", "send_attachment", "send_log", "send_server_logs", "send_panel_message"}:
         if not await _ai_can_sensitive(ctx):
             return "DENIED: only the configured AI controller or server administrators can send server-wide messages/files."
         channel = ctx.channel
@@ -6098,8 +6098,10 @@ async def _exec_ai_tool(ctx, name, args):
                     configured_id = await raw_setting(guild.id, setting_key)
                     configured = guild.get_channel(int(configured_id)) if configured_id and str(configured_id).isdigit() else None
                     if configured is None:
-                        return f"DENIED: the configured destination ({setting_key}) is missing or not set."
-                    channel = configured
+                        if name != "send_log":
+                            return f"DENIED: the configured destination ({setting_key}) is missing or not set."
+                    else:
+                        channel = configured
                 except Exception as exc:
                     return f"DENIED: could not resolve configured destination ({type(exc).__name__})."
         if not channel or not hasattr(channel, "send"):
@@ -6137,7 +6139,7 @@ async def _exec_ai_tool(ctx, name, args):
             await _ai_audit(ctx, name, f"Exported {len(rows)} server audit entries to channel {channel.id}; message_id={sent.id}")
             return f"Sent {len(rows)} server audit-log entries to #{channel.name} as {filename} (message ID {sent.id})."
         if name == "send_message":
-            content = str(args.get("content", "")).strip()"
+            content = str(args.get("content", "")).strip()
             if not content or len(content) > 1800:
                 return "DENIED: message must contain 1 to 1800 characters."
             await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
