@@ -5364,7 +5364,7 @@ _AI_TOOLS = [
     _ai_tool("send_file", "Create and send a UTF-8 text file in the current channel. Allowed extensions: txt, log, md, csv, json.", {"filename": _S, "content": _S}, ["filename", "content"]),
     _ai_tool("send_attachment", "Re-send one attachment from the current AI request by its zero-based index.", {"index": _I}, ["index"]),
     _ai_tool("send_log", "Send an AI audit/log entry to the configured AI log channel, or current channel if not configured.", {"title": _S, "details": _S}, ["title", "details"]),
-    _ai_tool("send_server_logs", "Export recent Discord server audit-log entries as a file to the current, configured log, or configured panel channel.", {"limit": _I, "destination": {"type": "string", "enum": ["current", "log", "panel"]}}, []),
+    _ai_tool("send_server_logs", "Export recent Discord server Audit Log entries only (not Railway runtime logs) as a file to the current, configured log, or configured panel channel.", {"limit": _I, "destination": {"type": "string", "enum": ["current", "log", "panel"]}}, []),
     _ai_tool("send_panel_message", "Send a message to the configured AI panel/dashboard channel.", {"content": _S}, ["content"]),
     _ai_tool("list_workspace_files", "List files in the restricted AI workspace only."),
     _ai_tool("read_workspace_file", "Read a text file from the restricted AI workspace only.", {"path": _S}, ["path"]),
@@ -6545,7 +6545,7 @@ async def _exec_ai_tool(ctx, name, args):
                 return "DENIED: this is a protected system/log/panel channel."
             if isinstance(channel, discord.CategoryChannel) and channel.channels:
                 return "DENIED: category is not empty. Move or delete its child channels first."
-            if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
+            if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel, discord.StageChannel, discord.CategoryChannel)):
                 return "DENIED: unsupported channel type."
             channel_name = channel.name
             await channel.delete(reason=reason)
@@ -6557,7 +6557,7 @@ async def _exec_ai_tool(ctx, name, args):
             topic = str(args.get("topic", "")).strip()[:900]
             if new_name:
                 changes["name"] = new_name
-            if topic and isinstance(channel, discord.TextChannel):
+            if topic and isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
                 changes["topic"] = topic
             if not changes:
                 return "No valid channel changes supplied."
@@ -6565,7 +6565,7 @@ async def _exec_ai_tool(ctx, name, args):
             await _ai_audit(ctx, name, f"Edited channel {channel.id}: {', '.join(changes.keys())}")
             return f"Updated channel #{channel.name}."
         if name == "move_channel_category":
-            if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel)):
+            if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel, discord.StageChannel)):
                 return "Only text and voice channels can be moved."
             category_query = str(args.get("category_query", "")).strip()
             category = _ai_channel(guild, category_query) if category_query else None
