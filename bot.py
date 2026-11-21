@@ -5974,7 +5974,9 @@ async def _exec_ai_tool(ctx, name, args):
                     deployments = [edge.get("node") or {} for edge in edges]
                     if not deployments:
                         return "Railway returned no deployments for the configured service and environment."
-                    selected = next((item for item in deployments if item.get("status") == "SUCCESS"), deployments[0])
+                    # The deployment list is newest-first; prefer the latest attempt so
+                    # failed/crashed deployments can be investigated instead of hiding them.
+                    selected = deployments[0]
                     deployment_id = str(selected.get("id") or "").strip()
                     if not deployment_id:
                         return "Railway returned a deployment without an ID."
