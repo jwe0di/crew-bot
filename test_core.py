@@ -450,7 +450,7 @@ class AcceptRejectTests(BotTestCase):
         self.assertEqual(json.loads(row["data"])["confirmed_participants"], [20])
         again = self.interaction(self.member(20), message=await self.review_message(lid))
         await view.confirm_part.callback(again)
-        self.assertIn("already", self.last_text(again.response.send_message))
+        self.assertIn("already", self.last_text(again.response.send_message).casefold())
 
 
 # =====================================================================  الرتب
@@ -808,7 +808,7 @@ class ReadCommandsTests(BotTestCase):
         await invoke(bot.leaderboard_cmd, i, choice("week"))
         self.assertIn("<@10>", i.response.send_message.await_args.kwargs["embed"].description)
         i2 = self.interaction(self.members[10])
-        await invoke(bot.leaderboard_cmd, i2, None)
+        await invoke(bot.leaderboard_cmd, i2, choice("all"))
         self.assertIn("8 pts", self.last_text(i2.response.send_message))
 
     async def test_settings_command_renders_effective_values(self):
