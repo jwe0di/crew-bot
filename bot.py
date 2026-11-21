@@ -948,6 +948,8 @@ class CrewBot(commands.Bot):
         await _ai_db_init()
         if not await self.load_plugin("extensions.operations"):
             raise RuntimeError("Required operations extension failed to load; refusing partial startup.")
+        if not await self.load_plugin("extensions.ai_dashboard"):
+            raise RuntimeError("Required AI dashboard extension failed to load; refusing partial startup.")
         refresh_registered_command_index()
         self.add_view(ReviewView())
         self.add_view(TicketView())
@@ -7110,6 +7112,9 @@ bot.ai_is_controller = _ai_is_controller
 bot.ai_consume_rate_limit = _ai_consume_rate_limit
 bot.ai_context_factory = AIContext
 bot.ai_memory_write_intent = _ai_explicitly_requests_memory
+bot.ai_set_setting = set_setting
+bot.ai_raw_setting = raw_setting
+bot.ai_database_path = DB
 
 # Build the canonical command index only after every slash-command decorator ran.
 refresh_registered_command_index()
