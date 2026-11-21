@@ -809,7 +809,7 @@ class ReadCommandsTests(BotTestCase):
         self.assertIn("<@10>", i.response.send_message.await_args.kwargs["embed"].description)
         i2 = self.interaction(self.members[10])
         await invoke(bot.leaderboard_cmd, i2, choice("all"))
-        self.assertIn("8 pts", i2.response.send_message.await_args.kwargs["embed"].description)
+        self.assertIn("**8** pts", i2.response.send_message.await_args.kwargs["embed"].description)
 
     async def test_settings_command_renders_effective_values(self):
         i = self.interaction(self.member(1, admin=True))
