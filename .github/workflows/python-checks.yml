@@ -24,5 +24,7 @@ jobs:
           pip install -r requirements.txt
       - name: Compile project
         run: python -m compileall -q bot.py config.py core extensions tests
-      - name: Run regression tests
+      - name: Run root regression tests
+        run: python -m unittest test_core -v
+      - name: Run package regression tests
         run: python -m unittest discover -s tests -v
