@@ -29,7 +29,7 @@ class NativeDiscordCoverageTests(unittest.TestCase):
     def test_every_added_tool_is_registered_and_dispatched(self) -> None:
         for name in self.REQUIRED_TOOLS:
             with self.subTest(tool=name):
-                self.assertRegex(BOT_SOURCE, rf'_ai_tool\\("{re.escape(name)}"')
+                self.assertRegex(BOT_SOURCE, rf'_ai_tool\("{re.escape(name)}"')
                 self.assertIn(f'"{name}"', EXECUTOR)
 
     def test_high_impact_event_and_automod_changes_require_approval(self) -> None:
