@@ -6338,6 +6338,9 @@ async def _exec_ai_tool(ctx, name, args):
         if await _ai_protected_channel(ctx, category):
             return "DENIED: this category is configured as a protected system/log/panel channel."
         children = list(category.channels)
+        protected_children = [child.name for child in children if await _ai_protected_channel(ctx, child)]
+        if protected_children:
+            return "DENIED: category contains protected channels: " + ", ".join(protected_children[:10])
         delete_children = bool(args.get("delete_children", False))
         if delete_children:
             failures = []
@@ -6371,6 +6374,8 @@ async def _exec_ai_tool(ctx, name, args):
         if not channel:
             return "Channel not found."
         if name == "delete_channel":
+            if await _ai_protected_channel(ctx, channel):
+                return "DENIED: this is a protected system/log/panel channel."
             if isinstance(channel, discord.CategoryChannel) and channel.channels:
                 return "DENIED: category is not empty. Move or delete its child channels first."
             if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
@@ -6799,6 +6804,12 @@ async def _run_ai(ctx, text, image_url=None, transient_attachment_context=""):
                     answer += "\n\n" + approval_result
             if ctx.action_receipts:
                 answer += "\n\n**نتائج الأدوات المؤكدة من التطبيق:**\n" + "\n".join(f"- {name}: {output}" for name, output in ctx.action_receipts[-10:])
+            elif not approval_result:
+                lower_answer = answer.casefold()
+                claim_terms = ("تم إرسال طلب", "تم حذف", "تم إنشاء", "تم تنفيذ", "أرسلت", "حذفت", "أنشأت", "نفذت", "بعت", "successfully sent", "has been sent", "was deleted", "was created")
+                negative_terms = ("لم يتم", "لم أرسل", "لم يحدث", "not sent", "not deleted", "not created")
+                if not any(term in lower_answer for term in negative_terms) and any(term in lower_answer for term in claim_terms):
+                    answer = "❌ لا يوجد تأكيد على تنفيذ أي إجراء أو إرسال طلب موافقة. لم تستدعِ الاستجابة أداة التنفيذ، لذلك لم يتم إجراء تغيير."
             answer = answer[:AI_MAX_REPLY_CHARS]
             history.append({"role": "assistant", "content": answer})
             # Do not persist raw attachment contents in long-term AI conversation memory.
